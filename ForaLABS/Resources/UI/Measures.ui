@@ -6,13 +6,11 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>380</width>
-    <height>560</height>
+    <width>762</width>
+    <height>907</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
-
-   <!-- Inputs -->
    <item>
     <widget class="ctkCollapsibleButton" name="inputsCollapsibleButton">
      <property name="text">
@@ -50,14 +48,35 @@
         </property>
        </widget>
       </item>
-
-      <!-- Segment row with combo + refresh -->
+      <item row="2" column="0">
+       <widget class="QLabel" name="labelVoxel">
+        <property name="text">
+         <string>Voxel (mm):</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="ctkDoubleSpinBox" name="thickVoxelSpin">
+        <property name="decimals">
+         <number>6</number>
+        </property>
+        <property name="minimum">
+         <double>0.000100000000000</double>
+        </property>
+        <property name="maximum">
+         <double>5.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>0.003000000000000</double>
+        </property>
+       </widget>
+      </item>
       <item row="1" column="0" colspan="2">
        <layout class="QHBoxLayout" name="hLayoutSegment">
         <item>
          <widget class="QLabel" name="labelWall">
           <property name="text">
-           <string>Segment (Wall):</string>
+           <string>Segment</string>
           </property>
          </widget>
         </item>
@@ -76,22 +95,112 @@
      </layout>
     </widget>
    </item>
-
-   <!-- Compute & Export -->
+   <item>
+    <widget class="QPushButton" name="computeButton">
+     <property name="text">
+      <string>Compute</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTextBrowser" name="outputBrowser"/>
+   </item>
+   <item>
+    <widget class="QLabel" name="statusLabel">
+     <property name="text">
+      <string/>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="thicknessCollapsibleButton">
+     <property name="text">
+      <string>Thickness map</string>
+     </property>
+     <property name="collapsed">
+      <bool>true</bool>
+     </property>
+     <layout class="QHBoxLayout" name="horizontalLayout_2">
+      <item>
+       <widget class="QPushButton" name="showThickButton">
+        <property name="text">
+         <string>Show map thickness in slices</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="genThickButton">
+        <property name="text">
+         <string>Generate thickness map model 3D</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
    <item>
     <widget class="ctkCollapsibleButton" name="computeCollapsibleButton">
      <property name="text">
-      <string>Compute &amp; Export</string>
+      <string>Export</string>
      </property>
-     <layout class="QFormLayout" name="formLayout_compute">
-      <item row="0" column="0">
+     <property name="collapsed">
+      <bool>true</bool>
+     </property>
+     <layout class="QHBoxLayout" name="horizontalLayout">
+      <item>
+       <widget class="QPushButton" name="exportButton">
+        <property name="text">
+         <string>Export measures</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="expThickButton">
+        <property name="text">
+         <string>Export thickness map in NRRD</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="saveMeshButton">
+        <property name="text">
+         <string>Export cleaned mesh (.stl/.ply)</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer_2">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+   <item>
+    <widget class="ctkCollapsibleButton" name="settingsCollapsibleButton">
+     <property name="text">
+      <string>Settings</string>
+     </property>
+     <property name="collapsed">
+      <bool>true</bool>
+     </property>
+     <layout class="QFormLayout" name="formLayout">
+      <item row="1" column="0">
        <widget class="QLabel" name="labelMinDiam">
         <property name="text">
          <string>Remove islands: % of BBox diagonal (0=off)</string>
         </property>
        </widget>
       </item>
-      <item row="0" column="1">
+      <item row="1" column="1">
        <widget class="ctkDoubleSpinBox" name="minDiamPctSpin">
         <property name="decimals">
          <number>1</number>
@@ -107,184 +216,45 @@
         </property>
        </widget>
       </item>
-
-      <item row="1" column="0" colspan="2">
+      <item row="2" column="0">
        <widget class="QCheckBox" name="removeUnrefCheck">
         <property name="text">
-         <string>Remove unreferenced vertices (MeshLab-like)</string>
+         <string>Remove unreferenced vertices</string>
         </property>
         <property name="checked">
          <bool>true</bool>
         </property>
        </widget>
       </item>
-
-      <item row="2" column="0" colspan="2">
-       <widget class="QCheckBox" name="poreDensityOuterCheck">
-        <property name="text">
-         <string>Use OUTER area for pore density (recommended)</string>
-        </property>
-        <property name="checked">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-
-      <item row="3" column="0" colspan="2">
-       <widget class="QPushButton" name="computeButton">
-        <property name="text">
-         <string>Compute metrics (mesh)</string>
-        </property>
-       </widget>
-      </item>
-
-      <item row="4" column="0" colspan="2">
-       <widget class="QPushButton" name="exportButton">
-        <property name="text">
-         <string>Export HTML/CSV/JSON</string>
-        </property>
-       </widget>
-      </item>
-
-      <item row="5" column="0" colspan="2">
-       <widget class="QPushButton" name="saveMeshButton">
-        <property name="text">
-         <string>Save cleaned mesh (.stl/.ply)</string>
-        </property>
-       </widget>
-      </item>
-
-      <item row="6" column="0" colspan="2">
-       <widget class="QTextBrowser" name="outputBrowser">
-        <property name="minimumHeight">
-         <number>280</number>
-        </property>
-       </widget>
-      </item>
      </layout>
     </widget>
    </item>
-
-   <!-- Thickness -->
-   <item>
-    <widget class="ctkCollapsibleButton" name="thicknessCollapsibleButton">
-     <property name="text">
-      <string>Shell thickness (medial, optional)</string>
-     </property>
-     <property name="collapsed">
-      <bool>true</bool>
-     </property>
-     <layout class="QFormLayout" name="formLayout_thickness">
-      <item row="0" column="0" colspan="2">
-       <widget class="QCheckBox" name="thickEnableCheck">
-        <property name="text">
-         <string>Compute thickness (medial 2×distance)</string>
-        </property>
-       </widget>
-      </item>
-
-      <item row="1" column="0">
-       <widget class="QLabel" name="labelVoxel">
-        <property name="text">
-         <string>Voxel (mm):</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="ctkDoubleSpinBox" name="thickVoxelSpin">
-        <property name="decimals">
-         <number>6</number>
-        </property>
-        <property name="minimum">
-         <double>0.000100000000000</double>
-        </property>
-        <property name="maximum">
-         <double>5.000000000000000</double>
-        </property>
-        <property name="value">
-         <double>0.003000000000000</double>
-        </property>
-       </widget>
-      </item>
-
-      <item row="2" column="0" colspan="2">
-       <widget class="QPushButton" name="genThickButton">
-        <property name="text">
-         <string>Generate map (mesh colormap)</string>
-        </property>
-       </widget>
-      </item>
-
-      <item row="3" column="0" colspan="2">
-       <widget class="QPushButton" name="expThickButton">
-        <property name="text">
-         <string>Export map (NRRD)</string>
-        </property>
-       </widget>
-      </item>
-
-      <item row="4" column="0" colspan="2">
-       <widget class="QPushButton" name="showThickButton">
-        <property name="text">
-         <string>Show map in slices</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-
-   <!-- Status + spacer -->
-   <item>
-    <widget class="QLabel" name="statusLabel">
-     <property name="text">
-      <string/>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <spacer name="verticalSpacer">
-     <property name="orientation">
-      <enum>Qt::Vertical</enum>
-     </property>
-     <property name="sizeHint" stdset="0">
-      <size>
-       <width>20</width>
-       <height>40</height>
-      </size>
-     </property>
-    </spacer>
-   </item>
-
   </layout>
  </widget>
-
-<customwidgets>
+ <customwidgets>
   <customwidget>
-    <class>qMRMLNodeComboBox</class>
-    <extends>QWidget</extends>
-    <header>qMRMLNodeComboBox.h</header>
+   <class>ctkCollapsibleButton</class>
+   <extends>QWidget</extends>
+   <header>ctkCollapsibleButton.h</header>
+   <container>1</container>
   </customwidget>
   <customwidget>
-    <class>qMRMLWidget</class>
-    <extends>QWidget</extends>
-    <header>qMRMLWidget.h</header>
-    <container>1</container>
+   <class>ctkDoubleSpinBox</class>
+   <extends>QWidget</extends>
+   <header>ctkDoubleSpinBox.h</header>
   </customwidget>
   <customwidget>
-    <class>ctkCollapsibleButton</class>
-    <extends>QWidget</extends>
-    <header>ctkCollapsibleButton.h</header>
-    <container>1</container>
+   <class>qMRMLNodeComboBox</class>
+   <extends>QWidget</extends>
+   <header>qMRMLNodeComboBox.h</header>
   </customwidget>
   <customwidget>
-    <class>ctkDoubleSpinBox</class>
-    <extends>QWidget</extends>
-    <header>ctkDoubleSpinBox.h</header>
+   <class>qMRMLWidget</class>
+   <extends>QWidget</extends>
+   <header>qMRMLWidget.h</header>
+   <container>1</container>
   </customwidget>
-</customwidgets>
-
-
+ </customwidgets>
  <resources/>
  <connections>
   <connection>

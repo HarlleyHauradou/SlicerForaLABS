@@ -1,11 +1,3 @@
-# Measures.py — ScriptedLoadableModule (3D Slicer)
-# MESH-only mode (MeshLab-like)
-# Metrics: Pore count (genus), Surface area (mm²), Volume (mm³), S/V (mm⁻¹), Pore density (#/mm²)
-# Extra: MeshLab-like cleaning (Remove Isolated Pieces wrt Diameter) by **percentage of BBox diagonal**
-# Thickness: **Medial method (2×distance)** — simplified
-# Provisional extra: **average thickness V/A = Volume/Area** (literature: inverse of specific surface area)
-# Now with **thickness map**: exports NRRD volume and paints mesh with per-vertex scalar
-
 import os
 import time
 import logging
@@ -31,12 +23,12 @@ class Measures(ScriptedLoadableModule):
         self.parent.categories = ["ForaLABS"]
         self.parent.contributors = ["Harlley Hauradou (Nuclear Engineering Program of UFRJ)", "Thaís Hauradou (Nuclear Engineering Program of UFRJ)"]
         self.parent.helpText = (
-            "Computes metrics directly from a segment's mesh (Closed surface): Pore count (genus), "
-            "Surface area, Volume, S/V and Pore density (count/area). Includes MeshLab-like cleaning: "
+            "Computes measures directly from a segment's mesh (Closed surface): Pore count, and Pore density (count/area)." 
+            "\nIncludes MeshLab-like cleaning: "
             "Remove Isolated Pieces (wrt Diameter) with threshold in % of the BBox diagonal. Measures thickness by "
             "distance to the medial surface (2×distance) and generates a **thickness map** (NRRD volume + mesh colormap)."
         )
-        self.parent.acknowledgementText = "VTK (MassProperties/Connectivity/ExtractEdges/CleanPolyData)."
+        self.parent.acknowledgementText = ""
 
 # =========================================================
 # Widget (UI)
@@ -62,12 +54,10 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.refreshSegsBtn        = self.ui.refreshSegsButton
         self.minDiamPctSpin        = self.ui.minDiamPctSpin
         self.removeUnrefCheck      = self.ui.removeUnrefCheck
-        self.poreDensityOuterCheck = self.ui.poreDensityOuterCheck
         self.computeBtn            = self.ui.computeButton
         self.exportBtn             = self.ui.exportButton
         self.saveMeshBtn           = self.ui.saveMeshButton
         self.outputBrowser         = self.ui.outputBrowser
-        self.thickEnableCheck      = self.ui.thickEnableCheck
         self.thickVoxelSpin        = self.ui.thickVoxelSpin
         self.genThickBtn           = self.ui.genThickButton
         self.expThickBtn           = self.ui.expThickButton
@@ -118,20 +108,17 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         try: rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError: rmUnref = bool(self.removeUnrefCheck.checked)
 
-        # thickness (medial, optional)
-        try:
-            thickEnable = bool(self.thickEnableCheck.isChecked())
-        except TypeError:
-            thickEnable = bool(self.thickEnableCheck.checked)
-        try: thickVoxel = float(self.thickVoxelSpin.value())
-        except TypeError: thickVoxel = float(self.thickVoxelSpin.value)
+        # thickness 
+        try: 
+            thickVoxel = float(self.thickVoxelSpin.value())
+        except TypeError: 
+            thickVoxel = float(self.thickVoxelSpin.value)
 
         self.statusLabel.text = "Computing…"; slicer.app.processEvents()
         t0 = time.perf_counter()
         metrics = self.logic.compute_metrics(
             segNode, wallSid,
-            minDiamPct=minPct, removeUnref=rmUnref,
-            thickness_enabled=thickEnable, thickness_voxel_mm=thickVoxel
+            minDiamPct=minPct, removeUnref=rmUnref, thickness_voxel_mm=thickVoxel
         )
         dt = time.perf_counter() - t0
 
@@ -251,7 +238,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         self.last_thick_model = None # vtkMRMLModelNode
 
     def compute_metrics(self, segNode, wallSegmentId, minDiamPct=10.0, removeUnref=True,
-                       thickness_enabled=False, thickness_voxel_mm=0.003):
+                       thickness_enabled=True, thickness_voxel_mm=0.003):
         poly = self._segment_to_polydata(segNode, wallSegmentId)
         poly = self._prepare_polydata(poly)
 
@@ -266,17 +253,17 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         # Area and volume
         A_mesh, V_mesh = self._surface_area_and_volume(poly)
         # Outer area (only surfaces in contact with exterior), for V/A
-        try:
-            voxel_for_A = float(thickness_voxel_mm) if thickness_enabled else 0.003
-        except Exception:
-            voxel_for_A = 0.003
-        try:
-            A_outer = self._outer_surface_area_mm2_from_poly(poly, voxel_mm=voxel_for_A)
-        except Exception as e:
-            logging.error(f"A_outer failed, using total area: {e}")
-            A_outer = A_mesh
-        # Average thickness via V/A (mm)
-        thickness_va_mm = (V_mesh / A_mesh) if A_mesh > 0 else float('nan')
+        # try:
+        #     voxel_for_A = float(thickness_voxel_mm) if thickness_enabled else 0.003
+        # except Exception:
+        #     voxel_for_A = 0.003
+        # try:
+        #     A_outer = self._outer_surface_area_mm2_from_poly(poly, voxel_mm=voxel_for_A)
+        # except Exception as e:
+        #     logging.error(f"A_outer failed, using total area: {e}")
+        #     A_outer = A_mesh
+        # # Average thickness via V/A (mm)
+        # thickness_va_mm = (V_mesh / A_mesh) if A_mesh > 0 else float('nan')
 
         # Pore count via genus
         pore_count = self._genus_based_pore_count(poly)
@@ -305,12 +292,12 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         metrics = {
             "count_pores": int(pore_count),
             "surface_area_mm2": float(A_mesh),
-            "outer_area_mm2": float(A_outer),
+            # "outer_area_mm2": float(A_outer),
             "volume_mm3": float(V_mesh),
             "S_over_V": float(S_over_V),
-            "thickness_v_over_a_mm": float((V_mesh / A_outer) if A_outer>0 else float('nan')),
+            # "thickness_v_over_a_mm": float((V_mesh / A_outer) if A_outer>0 else float('nan')),
             "pore_density_per_mm2": float(pore_density),
-            "thickness_v_over_a_mm": float(thickness_va_mm),
+            # "thickness_v_over_a_mm": float(thickness_va_mm),
             "cleaning": clean_info,
             "thickness_mm": thick
         }
@@ -725,52 +712,52 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             clean = vtk.vtkCleanPolyData(); clean.SetInputData(out); clean.Update(); out = clean.GetOutput()
         return out, info
 
-    # ---------- Outer area for V/A ----------
-    def _outer_surface_area_mm2_from_poly(self, poly, voxel_mm=0.003):
-        """Shell area in contact with the EXTERIOR (mm²), via voxelization and face counting."""
-        mask, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(voxel_mm))
-        mask_u8 = sitk.Cast(mask>0, sitk.sitkUInt8)
-        outside = self._outside_from_mask(mask_u8)
-        arr_w = sitk.GetArrayFromImage(mask_u8)>0   # (z,y,x)
-        arr_o = sitk.GetArrayFromImage(outside)>0
-        sx, sy, sz = spacing  # (x,y,z) mm
-        # faces perpendicular to X (pairs along x)
-        c1 = np.count_nonzero(arr_w[:, :, :-1] & arr_o[:, :, 1:])
-        c2 = np.count_nonzero(arr_o[:, :, :-1] & arr_w[:, :, 1:])
-        area_x = (c1 + c2) * (sy * sz)
-        # faces perpendicular to Y
-        c1 = np.count_nonzero(arr_w[:, :-1, :] & arr_o[:, 1:, :])
-        c2 = np.count_nonzero(arr_o[:, :-1, :] & arr_w[:, 1:, :])
-        area_y = (c1 + c2) * (sx * sz)
-        # faces perpendicular to Z
-        c1 = np.count_nonzero(arr_w[:-1, :, :] & arr_o[1:, :, :])
-        c2 = np.count_nonzero(arr_o[:-1, :, :] & arr_w[1:, :, :])
-        area_z = (c1 + c2) * (sx * sy)
-        return float(area_x + area_y + area_z)
+    # # ---------- Outer area for V/A ----------
+    # def _outer_surface_area_mm2_from_poly(self, poly, voxel_mm=0.003):
+    #     """Shell area in contact with the EXTERIOR (mm²), via voxelization and face counting."""
+    #     mask, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(voxel_mm))
+    #     mask_u8 = sitk.Cast(mask>0, sitk.sitkUInt8)
+    #     outside = self._outside_from_mask(mask_u8)
+    #     arr_w = sitk.GetArrayFromImage(mask_u8)>0   # (z,y,x)
+    #     arr_o = sitk.GetArrayFromImage(outside)>0
+    #     sx, sy, sz = spacing  # (x,y,z) mm
+    #     # faces perpendicular to X (pairs along x)
+    #     c1 = np.count_nonzero(arr_w[:, :, :-1] & arr_o[:, :, 1:])
+    #     c2 = np.count_nonzero(arr_o[:, :, :-1] & arr_w[:, :, 1:])
+    #     area_x = (c1 + c2) * (sy * sz)
+    #     # faces perpendicular to Y
+    #     c1 = np.count_nonzero(arr_w[:, :-1, :] & arr_o[:, 1:, :])
+    #     c2 = np.count_nonzero(arr_o[:, :-1, :] & arr_w[:, 1:, :])
+    #     area_y = (c1 + c2) * (sx * sz)
+    #     # faces perpendicular to Z
+    #     c1 = np.count_nonzero(arr_w[:-1, :, :] & arr_o[1:, :, :])
+    #     c2 = np.count_nonzero(arr_o[:-1, :, :] & arr_w[1:, :, :])
+    #     area_z = (c1 + c2) * (sx * sy)
+    #     return float(area_x + area_y + area_z)
 
-    def _outside_from_mask(self, mask_u8):
-        inv = sitk.BinaryNot(mask_u8)
-        cc = sitk.ConnectedComponent(inv)
-        stats = sitk.LabelShapeStatisticsImageFilter(); stats.Execute(cc)
-        size = mask_u8.GetSize()  # (x,y,z)
-        outside_label = None; outside_count = -1
-        for lbl in stats.GetLabels():
-            x, sx_, y, sy_, z, sz_ = stats.GetBoundingBox(lbl)
-            touches = (x==0 or y==0 or z==0 or (x+sx_==size[0]) or (y+sy_==size[1]) or (z+sz_==size[2]))
-            if touches:
-                n = stats.GetNumberOfPixels(lbl)
-                if n > outside_count:
-                    outside_label, outside_count = lbl, n
-        if outside_label is None:
-            # fallback: largest background component
-            lbls = list(stats.GetLabels())
-            if not lbls:
-                return inv
-            outside_label = max(lbls, key=lambda L: stats.GetNumberOfPixels(L))
-        outside = sitk.Equal(cc, int(outside_label))
-        outside = sitk.Cast(outside, sitk.sitkUInt8)
-        outside.CopyInformation(mask_u8)
-        return outside
+    # def _outside_from_mask(self, mask_u8):
+    #     inv = sitk.BinaryNot(mask_u8)
+    #     cc = sitk.ConnectedComponent(inv)
+    #     stats = sitk.LabelShapeStatisticsImageFilter(); stats.Execute(cc)
+    #     size = mask_u8.GetSize()  # (x,y,z)
+    #     outside_label = None; outside_count = -1
+    #     for lbl in stats.GetLabels():
+    #         x, sx_, y, sy_, z, sz_ = stats.GetBoundingBox(lbl)
+    #         touches = (x==0 or y==0 or z==0 or (x+sx_==size[0]) or (y+sy_==size[1]) or (z+sz_==size[2]))
+    #         if touches:
+    #             n = stats.GetNumberOfPixels(lbl)
+    #             if n > outside_count:
+    #                 outside_label, outside_count = lbl, n
+    #     if outside_label is None:
+    #         # fallback: largest background component
+    #         lbls = list(stats.GetLabels())
+    #         if not lbls:
+    #             return inv
+    #         outside_label = max(lbls, key=lambda L: stats.GetNumberOfPixels(L))
+    #     outside = sitk.Equal(cc, int(outside_label))
+    #     outside = sitk.Cast(outside, sitk.sitkUInt8)
+    #     outside.CopyInformation(mask_u8)
+    #     return outside
 
 # =========================================================
 # Tests (placeholder)
