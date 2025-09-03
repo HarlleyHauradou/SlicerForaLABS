@@ -13,6 +13,9 @@ import slicer
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 
+from string import Template
+import os, numpy as np
+
 # =========================================================
 # Module
 # =========================================================
@@ -130,8 +133,8 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         metrics = self.logic.last_metrics; assert metrics, "Compute metrics first."
         outDir = qt.QFileDialog.getExistingDirectory(None, "Choose output folder")
         if not outDir: return
-        htmlPath, csvPath = self.logic.export_results(outDir)
-        qt.QMessageBox.information(slicer.util.mainWindow(), "Measures", f"Exported: - {htmlPath} - {csvPath}")
+        pdfPath = self.logic.export_results(outDir)
+        qt.QMessageBox.information(slicer.util.mainWindow(), "Measures", f"Exported: - {pdfPath}")
 
     def onSaveCleanMesh(self):
         # Save cleaned mesh (after island removal) as STL/PLY
@@ -225,7 +228,9 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         else:
             self.statusLabel.text = "Failed to show in slices. Check the log."
 
-    # =========================================================
+
+
+# =========================================================
 # Logic (mesh-only)
 # =========================================================
 class MeasuresLogic(ScriptedLoadableModuleLogic):
@@ -252,25 +257,14 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
 
         # Area and volume
         A_mesh, V_mesh = self._surface_area_and_volume(poly)
-        # Outer area (only surfaces in contact with exterior), for V/A
-        # try:
-        #     voxel_for_A = float(thickness_voxel_mm) if thickness_enabled else 0.003
-        # except Exception:
-        #     voxel_for_A = 0.003
-        # try:
-        #     A_outer = self._outer_surface_area_mm2_from_poly(poly, voxel_mm=voxel_for_A)
-        # except Exception as e:
-        #     logging.error(f"A_outer failed, using total area: {e}")
-        #     A_outer = A_mesh
-        # # Average thickness via V/A (mm)
-        # thickness_va_mm = (V_mesh / A_mesh) if A_mesh > 0 else float('nan')
-
+       
         # Pore count via genus
         pore_count = self._genus_based_pore_count(poly)
 
         # Derived
         S_over_V = (A_mesh / V_mesh) if V_mesh > 0 else float('nan')
         pore_density = (pore_count / A_mesh) if A_mesh > 0 else float('nan')  # #/mm²
+        
 
         # Thickness (medial)
         thick = None
@@ -289,27 +283,41 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 logging.error(f"Thickness (medial) error: {e}")
                 thick = None
 
+        # Porosity (%)
+        if pore_count and pore_count > 0:
+            porosity_pct = (pore_density / float(pore_count)) * 100.0
+        else:
+            porosity_pct = float('nan')
+
         metrics = {
             "count_pores": int(pore_count),
             "surface_area_mm2": float(A_mesh),
-            # "outer_area_mm2": float(A_outer),
             "volume_mm3": float(V_mesh),
             "S_over_V": float(S_over_V),
-            # "thickness_v_over_a_mm": float((V_mesh / A_outer) if A_outer>0 else float('nan')),
             "pore_density_per_mm2": float(pore_density),
-            # "thickness_v_over_a_mm": float(thickness_va_mm),
+            "porosity_pct": float(porosity_pct), 
             "cleaning": clean_info,
             "thickness_mm": thick
         }
+
         self.last_metrics = metrics
         return metrics
 
     # ---------- Render (HTML) ----------
+    def _resource_path(self, rel):
+        # Mesmo esquema do self.resourcePath do Slicer, com fallback local
+        try:
+            return self.resourcePath(rel)
+        except Exception:
+            return os.path.join(os.path.dirname(__file__), 'Resources', rel)
+
+    def _fmt(self, x, p=6):
+        if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
+            return "—"
+        return f"{float(x):.{p}f}"
+
     def render_metrics_html(self, m: dict, elapsed: float = None) -> str:
-        def _fmt(x, p=6):
-            if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
-                return "—"
-            return f"{float(x):.{p}f}"
+        # ---- nota de limpeza (igual ao seu código) ----
         note = ""
         clean = m.get('cleaning') or {}
         try:
@@ -321,100 +329,89 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 total = int(clean.get('regions_total', 0))
                 overflow = bool(clean.get('overflow_largest_only', False))
                 extra = " (fallback: largest component only)" if overflow else ""
-                note = f"<div class='sub' style='margin-top:6px;'>Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. (≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>"
+                note = (f"<div class='sub' style='margin-top:6px;'>"
+                        f"Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. "
+                        f"(≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>")
         except Exception:
             pass
+
+        # ---- thickness ----
         thick = m.get('thickness_mm') or {}
-        html = f"""
-        <html>
-        <head>
-        <meta charset='utf-8'>
-        <style>
-          body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Ubuntu, 'Helvetica Neue', Arial, sans-serif; color:#222; }}
-          .grid {{ display:grid; grid-template-columns: repeat(2, minmax(280px,1fr)); gap:14px; }}
-          .card {{ border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px; box-shadow:0 1px 2px rgba(0,0,0,0.04); }}
-          .title {{ font-size:18px; font-weight:600; margin:0 0 6px; }}
-          .metric {{ font-size:28px; font-weight:700; margin:2px 0; }}
-          .sub {{ color:#555; font-size:12px; }}
-          table {{ width:100%; border-collapse:collapse; margin-top:8px; }}
-          th, td {{ text-align:left; padding:6px 8px; border-bottom:1px solid #f0f0f0; font-size:14px; }}
-        </style>
-        </head>
-        <body>
-          <div class='grid'>
-            <div class='card'>
-              <div class='title'>Pore count (genus)</div>
-              <div class='metric'>{int(m.get('count_pores') or 0)}</div>
-              <div class='sub'>Number of handles/tunnels in the triangulated mesh.</div>
-            </div>
-            <div class='card'>
-              <div class='title'>Surface area</div>
-              <div class='metric'>{_fmt(m.get('surface_area_mm2'), p=6)} <span class='sub'>mm²</span></div>
-              <div class='sub'>Total mesh area (VTK MassProperties).</div>
-            </div>
-            <div class='card'>
-              <div class='title'>Volume</div>
-              <div class='metric'>{_fmt(m.get('volume_mm3'), p=6)} <span class='sub'>mm³</span></div>
-              <div class='sub'>Solid volume from mesh (VTK MassProperties).</div>
-            </div>
-            <div class='card'>
-              <div class='title'>S/V</div>
-              <div class='metric'>{_fmt(m.get('S_over_V'), p=6)} <span class='sub'>mm⁻¹</span></div>
-              <div class='sub'>Area/volume ratio (MeshLab-like).</div>
-            </div>
-            <div class='card'>
-              <div class='title'>Pore density</div>
-              <div class='metric'>{_fmt(m.get('pore_density_per_mm2'), p=6)} <span class='sub'>mm⁻²</span></div>
-              <div class='sub'>Pore count divided by total area.</div>
-            </div>
-            <div class='card'>
-              <div class='title'>Shell thickness</div>
-              <table>
-                <tr><th>Mean (medial)</th><td>{_fmt(((thick.get('mean_mm')*1000.0) if thick else None), p=3)} µm</td></tr>
-                <tr><th>SD (medial)</th><td>{_fmt(((thick.get('std_mm')*1000.0) if thick else None), p=3)} µm</td></tr>
-                <tr><th>Voxel</th><td>{_fmt(((thick.get('voxel_mm')*1000.0) if thick else None), p=3)} µm</td></tr>
-                <tr><th>Mean (V/A)</th><td>{_fmt((m.get('thickness_v_over_a_mm')*1000.0 if m.get('thickness_v_over_a_mm') is not None else None), p=3)} µm</td></tr>
-              </table>
-            </div>
-          </div>
-          <div class='sub' style='margin-top:10px;'>Time {'' if elapsed is None else f'≈ {elapsed:.2f} s'} • Mesh-only</div>
-          {note}
-        </body>
-        </html>
-        """
-        return html
+        thick_mean_um  = self._fmt((thick.get('mean_mm')  * 1000.0) if thick else None, p=3)
+        thick_sd_um    = self._fmt((thick.get('std_mm')   * 1000.0) if thick else None, p=3)
+        thick_voxel_um = self._fmt((thick.get('voxel_mm') * 1000.0) if thick else None, p=3)
+
+        # ---- contexto para o template ----
+        ctx = {
+            "pore_count":            int(m.get('count_pores') or 0),
+            "surface_area_mm2":      self._fmt(m.get('surface_area_mm2'), p=6),
+            "volume_mm3":            self._fmt(m.get('volume_mm3'), p=6),
+            "s_over_v":              self._fmt(m.get('S_over_V'), p=6),
+            "pore_density_per_mm2":  self._fmt(m.get('pore_density_per_mm2'), p=6),
+            "porosity_pct": self._fmt(m.get('porosity_pct'), p=2),
+            "thick_mean_um":         thick_mean_um,
+            "thick_sd_um":           thick_sd_um,
+            "thick_voxel_um":        thick_voxel_um,
+            "foot_left":             (f"Time ≈ {elapsed:.2f} s • " if elapsed is not None else ""),
+            "note":                  note,
+        }
+
+        # ---- carrega template e substitui ----
+        tpl_path = self._resource_path('HTML/MeasuresReport.html')
+        try:
+            with open(tpl_path, 'r', encoding='utf-8') as f:
+                tpl = Template(f.read())
+            return tpl.safe_substitute(ctx)
+        except Exception as e:
+            # Fallback: algo mínimo se o template não estiver disponível
+            return (f"<html><body><h3>Measures</h3>"
+                    f"<p>Pores: {ctx['pore_count']}</p>"
+                    f"<p>Area: {ctx['surface_area_mm2']} mm²</p>"
+                    f"<p>Volume: {ctx['volume_mm3']} mm³</p>"
+                    f"<p>S/V: {ctx['s_over_v']} mm⁻¹</p>"
+                    f"<p>Pore density: {ctx['pore_density_per_mm2']} mm⁻²</p>"
+                    f"<p>Thickness mean: {ctx['thick_mean_um']} µm</p>"
+                    f"<p>Thickness voxel: {ctx['thick_voxel_um']} µm</p>"
+                    f"<div class='sub'>{ctx['foot_left']}Mesh-only</div>"
+                    f"{ctx['note']}</body></html>")
+
+
+     # ---------- EXPORT Helper ----------
+    def _save_html_to_pdf(self, html: str, out_path: str):
+        doc = qt.QTextDocument()
+        doc.setHtml(html)
+
+        printer = qt.QPrinter()
+        printer.setOutputFormat(qt.QPrinter.PdfFormat)
+        printer.setOutputFileName(out_path)
+        # Página A4 com margens suaves (mm)
+        try:
+            printer.setPaperSize(qt.QPrinter.A4)
+        except Exception:
+            pass
+        try:
+            printer.setPageMargins(10, 10, 10, 10, qt.QPrinter.Millimeter)
+        except Exception:
+            # Alguns bindings não expõem essa sobrecarga; podemos ignorar
+            pass
+
+        # PyQt usa print_, PySide usa print — tratamos os dois:
+        if hasattr(doc, "print_"):
+            doc.print_(printer)
+        else:
+            doc.print(printer)
 
     # ---------- Export ----------
     def export_results(self, outDir):
+        import os, logging
         html = self.render_metrics_html(self.last_metrics or {}, elapsed=None)
-        htmlPath = os.path.join(outDir, "Measures_mesh_metrics.html")
-        with open(htmlPath, 'w', encoding='utf-8') as f:
-            f.write(html)
+        if not os.path.isdir(outDir):
+            os.makedirs(outDir, exist_ok=True)
+        pdfPath = os.path.join(outDir, "Measures_mesh_metrics.pdf")
+        self._save_html_to_pdf(html, pdfPath)
+        logging.info(f"Exported: {pdfPath}")
+        return pdfPath
 
-        csvPath = os.path.join(outDir, "Measures_mesh_metrics.csv")
-        m = self.last_metrics or {}
-        lines = [
-            "metric,value",
-            f"count_pores,{m.get('count_pores','')}",
-            f"surface_area_mm2,{m.get('surface_area_mm2','')}",
-            f"outer_area_mm2,{m.get('outer_area_mm2','')}",
-            f"volume_mm3,{m.get('volume_mm3','')}",
-            f"S_over_V,{m.get('S_over_V','')}",
-            f"pore_density_per_mm2,{m.get('pore_density_per_mm2','')}",
-            f"thickness_v_over_a_mm,{m.get('thickness_v_over_a_mm','')}",
-            f"thickness_v_over_a_um,{(m.get('thickness_v_over_a_mm')*1000.0) if isinstance(m.get('thickness_v_over_a_mm'), (int,float)) else ''}"
-        ]
-        t = m.get('thickness_mm') or {}
-        if t:
-            lines += [
-                f"thickness_medial_mean_um,{(t.get('mean_mm')*1000.0) if isinstance(t.get('mean_mm'), (int,float)) else ''}",
-                f"thickness_medial_std_um,{(t.get('std_mm')*1000.0) if isinstance(t.get('std_mm'), (int,float)) else ''}",
-                f"thickness_voxel_um,{(t.get('voxel_mm')*1000.0) if isinstance(t.get('voxel_mm'), (int,float)) else ''}"
-            ]
-        with open(csvPath, 'w', encoding='utf-8', newline='') as f:
-            f.write("".join(lines) + "")
-        logging.info(f"Exported: {htmlPath}, {csvPath}")
-        return htmlPath, csvPath
 
     def save_clean_mesh(self, outPath):
         """Saves the cleaned mesh (last generated) as STL or PLY. Returns (ok, finalPath)."""
@@ -580,7 +577,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 self.last_clean_poly = poly
                 self.last_thick_img, self.last_thick_info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(voxel_mm))
             # create MRML volume from image
-            volNode = self._thickness_volume_node_from_sitk(self.last_thick_img, name="Measures_ThicknessNRRD")
+            volNode = self._thickness_volume_node_from_sitk(self.last_thick_img*1000, name="Thickness")
             # set as background in the three slice views
             try:
                 slicer.util.setSliceViewerLayers(background=volNode, fit=True)

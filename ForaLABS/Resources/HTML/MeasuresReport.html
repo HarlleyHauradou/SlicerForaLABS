@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Ubuntu, 'Helvetica Neue', Arial, sans-serif;
+            color: #222;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(280px, 1fr));
+            gap: 14px;
+        }
+
+        .card {
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 12px 14px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+        }
+
+        .title {
+            font-size: 18px;
+            font-weight: 600;
+            margin: 0 0 6px;
+        }
+
+        .metric {
+            font-size: 28px;
+            font-weight: 700;
+            margin: 2px 0;
+        }
+
+        .sub {
+            color: #555;
+            font-size: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+        }
+
+        th,
+        td {
+            text-align: left;
+            padding: 6px 8px;
+            border-bottom: 1px solid #f0f0f0;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="grid">
+        <div class="card">
+            <div class="title">Pore count (genus)</div>
+            <div class="metric">${pore_count}</div>
+            <div class="sub">Number of handles/tunnels in the triangulated mesh.</div>
+        </div>
+        <div class="card">
+            <div class="title">Surface area</div>
+            <div class="metric">${surface_area_mm2} <span class="sub">mm²</span></div>
+            <div class="sub">Total mesh area (VTK MassProperties).</div>
+        </div>
+        <div class="card">
+            <div class="title">Volume</div>
+            <div class="metric">${volume_mm3} <span class="sub">mm³</span></div>
+            <div class="sub">Solid volume from mesh (VTK MassProperties).</div>
+        </div>
+        <div class="card">
+            <div class="title">S/V</div>
+            <div class="metric">${s_over_v} <span class="sub">mm⁻¹</span></div>
+            <div class="sub">Area/volume ratio (MeshLab-like).</div>
+        </div>
+        <div class="card">
+            <div class="title">Pore density</div>
+            <div class="metric">${pore_density_per_mm2} <span class="sub">mm⁻²</span></div>
+            <div class="sub">Pore count divided by total area.</div>
+        </div>
+        <div class="card">
+            <div class="title">Porosity</div>
+            <div class="metric">${porosity_pct} <span class="sub">%</span></div>
+            <div class="sub">Porosity = (pore density / pore count) × 100.</div>
+        </div>
+        <div class="card">
+            <div class="title">Shell thickness</div>
+            <table>
+                <tr>
+                    <th>Mean (medial)</th>
+                    <td>${thick_mean_um} µm</td>
+                </tr>
+                <tr>
+                    <th>SD (medial)</th>
+                    <td>${thick_sd_um} µm</td>
+                </tr>
+                <tr>
+                    <th>Voxel</th>
+                    <td>${thick_voxel_um} µm</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+
+    <div class="sub" style="margin-top:10px;">${foot_left}Mesh-only</div>
+    ${note}
+</body>
+
+</html>
