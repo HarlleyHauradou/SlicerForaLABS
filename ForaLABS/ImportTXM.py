@@ -1,15 +1,3 @@
-# -*- coding: utf-8 -*-
-#
-# ImportTXM.py  (OLE-only version)
-# ScriptedLoadableModule to import .txm volumes (ZEISS XRM) directly into 3D Slicer
-# using only 'olefile' (OLE reading) and SimpleITK (NRRD writing). No dxchange.
-#
-# Installation: place this file in any Slicer ScriptedLoadable modules folder
-# (for example, inside your ForaLABS package). Restart Slicer.
-# The module will appear under "MicroCT" as "Import TXM".
-#
-# Author: Harlley + Chica (ForaLAB)
-
 import os
 import json
 import logging
@@ -41,7 +29,7 @@ class ImportTXM(ScriptedLoadableModule):
             "Converts spacing from µm to mm and loads as NRRD."
         )
         self.parent.acknowledgementText = (
-            "OLE reading with 'olefile'. Developed in the ForaLAB project."
+            ""
         )
 
 
