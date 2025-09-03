@@ -45,87 +45,40 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
         self.logic = MeasuresLogic()
-        self.layout.setSpacing(8)
 
-        # 1) Input (Segmentation + segment)
-        io = ctk.ctkCollapsibleButton(); io.text = "1) Input (Segmentation & Segment)"
-        self.layout.addWidget(io)
-        ioForm = qt.QFormLayout(io)
+        # Load external .ui and bind widgets
+        try:
+            uiWidget = slicer.util.loadUI(self.resourcePath('UI/Measures.ui'))
+        except Exception:
+            import os
+            ui_path = os.path.join(os.path.dirname(__file__), 'Resources', 'UI', 'Measures.ui')
+            uiWidget = slicer.util.loadUI(ui_path)
+        self.layout.addWidget(uiWidget)
+        self.ui = slicer.util.childWidgetVariables(uiWidget)
 
-        self.segSelector = slicer.qMRMLNodeComboBox()
-        self.segSelector.nodeTypes = ["vtkMRMLSegmentationNode"]
-        self.segSelector.selectNodeUponCreation = True
-        self.segSelector.addEnabled = False
-        self.segSelector.removeEnabled = False
-        self.segSelector.noneEnabled = False
+        # Optional aliases (keep old attribute names)
+        self.segSelector           = self.ui.segSelector
+        self.wallSegmentCombo      = self.ui.wallSegmentCombo
+        self.refreshSegsBtn        = self.ui.refreshSegsButton
+        self.minDiamPctSpin        = self.ui.minDiamPctSpin
+        self.removeUnrefCheck      = self.ui.removeUnrefCheck
+        self.poreDensityOuterCheck = self.ui.poreDensityOuterCheck
+        self.computeBtn            = self.ui.computeButton
+        self.exportBtn             = self.ui.exportButton
+        self.saveMeshBtn           = self.ui.saveMeshButton
+        self.outputBrowser         = self.ui.outputBrowser
+        self.thickEnableCheck      = self.ui.thickEnableCheck
+        self.thickVoxelSpin        = self.ui.thickVoxelSpin
+        self.genThickBtn           = self.ui.genThickButton
+        self.expThickBtn           = self.ui.expThickButton
+        self.showThickBtn          = self.ui.showThickButton
+        self.statusLabel           = getattr(self.ui, 'statusLabel', qt.QLabel())
+
+        # MRML hookup required for qMRMLNodeComboBox in .ui
         self.segSelector.setMRMLScene(slicer.mrmlScene)
-        ioForm.addRow("SegmentationNode:", self.segSelector)
 
-        row = qt.QHBoxLayout()
-        self.wallSegmentCombo = qt.QComboBox()
-        self.refreshSegsBtn = qt.QPushButton("Refresh segments")
-        row.addWidget(qt.QLabel("Segment (Wall):")); row.addWidget(self.wallSegmentCombo, 1); row.addWidget(self.refreshSegsBtn)
-        ioForm.addRow(row)
+        # Signal connections
         self.refreshSegsBtn.clicked.connect(self.onRefreshSegments)
-
-        # 2) Actions
-        act = ctk.ctkCollapsibleButton(); act.text = "2) Compute & Export"
-        self.layout.addWidget(act)
-        actForm = qt.QFormLayout(act)
-
-        # MeshLab-like cleaning: parameter in % of the BBox diagonal
-        self.minDiamPctSpin = ctk.ctkDoubleSpinBox()
-        try: self.minDiamPctSpin.setDecimals(1)
-        except AttributeError: self.minDiamPctSpin.decimals = 1
-        try:
-            self.minDiamPctSpin.setMinimum(0.0)
-            self.minDiamPctSpin.setMaximum(100.0)
-            self.minDiamPctSpin.setValue(10.0)  # 10% (same as your MeshLab)
-        except AttributeError:
-            self.minDiamPctSpin.minimum = 0.0
-            self.minDiamPctSpin.maximum = 100.0
-            self.minDiamPctSpin.value = 10.0
-        self.minDiamPctSpin.setToolTip("Remove disconnected components with diameter smaller than X% of the bounding box diagonal (0 disables).")
-        actForm.addRow("Remove islands: % of BBox diagonal (0=off)", self.minDiamPctSpin)
-
-        self.removeUnrefCheck = qt.QCheckBox("Remove unreferenced vertices (MeshLab-like)")
-        self.removeUnrefCheck.setChecked(True)
-        actForm.addRow(self.removeUnrefCheck)
-
-        self.computeBtn = qt.QPushButton("Compute metrics (mesh)")
-        self.exportBtn  = qt.QPushButton("Export HTML/CSV")
-        actForm.addRow(self.computeBtn); actForm.addRow(self.exportBtn)
-        self.saveMeshBtn = qt.QPushButton("Save cleaned mesh (.stl/.ply)")
-        actForm.addRow(self.saveMeshBtn)
-
-        # Embedded output (HTML)
-        self.outputBrowser = qt.QTextBrowser()
-        self.outputBrowser.setOpenExternalLinks(True)
-        self.outputBrowser.setMinimumHeight(260)
-        actForm.addRow(qt.QLabel("Result:"))
-        actForm.addRow(self.outputBrowser)
-
-        # 3) Thickness (MEDIAL)
-        thickBox = ctk.ctkCollapsibleButton(); thickBox.text = "3) Shell thickness (medial, optional)"
-        self.layout.addWidget(thickBox)
-        thickForm = qt.QFormLayout(thickBox)
-        self.thickEnableCheck = qt.QCheckBox("Compute thickness (medial 2×distance)")
-        self.thickEnableCheck.setChecked(False)
-        self.thickVoxelSpin = ctk.ctkDoubleSpinBox()
-        try:
-            self.thickVoxelSpin.setDecimals(6); self.thickVoxelSpin.setMinimum(0.0001); self.thickVoxelSpin.setMaximum(5.0); self.thickVoxelSpin.setValue(0.003)
-        except AttributeError:
-            self.thickVoxelSpin.decimals = 6; self.thickVoxelSpin.minimum = 0.0001; self.thickVoxelSpin.maximum = 5.0; self.thickVoxelSpin.value = 0.003
-        thickForm.addRow(self.thickEnableCheck)
-        thickForm.addRow("Voxel (mm):", self.thickVoxelSpin)
-        # Thickness map
-        self.genThickBtn = qt.QPushButton("Generate map (mesh colormap)")
-        self.expThickBtn = qt.QPushButton("Export map (NRRD)")
-        self.showThickBtn = qt.QPushButton("Show map in slices")
-        thickForm.addRow(self.genThickBtn)
-        thickForm.addRow(self.expThickBtn)
-        thickForm.addRow(self.showThickBtn)
-
         self.computeBtn.clicked.connect(self.onCompute)
         self.exportBtn.clicked.connect(self.onExport)
         self.saveMeshBtn.clicked.connect(self.onSaveCleanMesh)
@@ -133,9 +86,8 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.expThickBtn.clicked.connect(self.onExportThicknessMap)
         self.showThickBtn.clicked.connect(self.onShowThicknessMapSlices)
 
-        self.statusLabel = qt.QLabel("")
-        self.layout.addWidget(self.statusLabel)
         self.layout.addStretch(1)
+
 
     # ---- UI helpers ----
     def onRefreshSegments(self):

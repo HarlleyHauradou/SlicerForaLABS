@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ImportTXM</class>
+ <widget class="qMRMLWidget" name="ImportTXM">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>420</width>
+    <height>560</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+
+   <!-- Input & Output -->
+   <item>
+    <widget class="ctkCollapsibleButton" name="ioCollapsibleButton">
+     <property name="text">
+      <string>Input file &amp; Output folder</string>
+     </property>
+     <layout class="QFormLayout" name="formLayout_io">
+      <item row="0" column="0">
+       <widget class="QLabel" name="label_txm">
+        <property name="text">
+         <string>.txm file:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="ctkPathLineEdit" name="txmPathEdit">
+        <property name="toolTip">
+         <string>Select a ZEISS TXM (*.txm) file</string>
+        </property>
+        <!-- nameFilters works in Designer; filters (Files/Dirs) will be set in Python for compatibility -->
+        <property name="nameFilters">
+         <stringlist>
+          <string>ZEISS TXM (*.txm)</string>
+         </stringlist>
+        </property>
+       </widget>
+      </item>
+
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_out">
+        <property name="text">
+         <string>Output folder:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="ctkPathLineEdit" name="outDirEdit">
+        <property name="toolTip">
+         <string>Folder to save the generated NRRD</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- Options -->
+   <item>
+    <widget class="ctkCollapsibleButton" name="optionsCollapsibleButton">
+     <property name="text">
+      <string>Options</string>
+     </property>
+     <layout class="QFormLayout" name="formLayout_opts">
+      <item row="0" column="0">
+       <widget class="QLabel" name="label_unit">
+        <property name="text">
+         <string>Unit of pixel_size:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="unitCombo">
+        <item>
+         <property name="text">
+          <string>micrometers (µm)</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>millimeters (mm)</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_flipz">
+        <property name="text">
+         <string>Flip Z:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QCheckBox" name="flipZCheck">
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- Run -->
+   <item>
+    <widget class="ctkCollapsibleButton" name="runCollapsibleButton">
+     <property name="text">
+      <string>Run</string>
+     </property>
+     <layout class="QVBoxLayout" name="vbox_run">
+      <item>
+       <layout class="QHBoxLayout" name="hbox_buttons">
+        <item>
+         <widget class="QPushButton" name="importBtn">
+          <property name="text">
+           <string>Import &amp; Load</string>
+          </property>
+          <property name="toolTip">
+           <string>Read TXM → save NRRD → load volume in Slicer</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="metaBtn">
+          <property name="text">
+           <string>Show Metadata</string>
+          </property>
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+
+      <item>
+       <widget class="QLabel" name="spacingLabel">
+        <property name="text">
+         <string>Applied spacing (mm): —</string>
+        </property>
+       </widget>
+      </item>
+
+      <item>
+       <widget class="QTextEdit" name="infoText">
+        <property name="readOnly">
+         <bool>true</bool>
+        </property>
+        <property name="minimumHeight">
+         <number>130</number>
+        </property>
+       </widget>
+      </item>
+
+      <item>
+       <widget class="QProgressBar" name="progress">
+        <property name="minimum">
+         <number>0</number>
+        </property>
+        <property name="maximum">
+         <number>100</number>
+        </property>
+        <property name="value">
+         <number>0</number>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>40</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+
+  </layout>
+ </widget>
+
+ <customwidgets>
+  <customwidget>
+   <class>qMRMLWidget</class>
+   <extends>QWidget</extends>
+   <header>qMRMLWidget.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ctkCollapsibleButton</class>
+   <extends>QWidget</extends>
+   <header>ctkCollapsibleButton.h</header>
+   <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>ctkPathLineEdit</class>
+   <extends>QWidget</extends>
+   <header>ctkPathLineEdit.h</header>
+  </customwidget>
+ </customwidgets>
+
+ <resources/>
+ <connections/>
+</ui>

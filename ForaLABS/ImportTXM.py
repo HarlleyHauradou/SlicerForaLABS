@@ -53,33 +53,36 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
-
         self.logic = ImportTXMLogic()
 
-        # Panel
-        self.layout.setSpacing(8)
-
-        # TXM file selector
-        fileRow = qt.QHBoxLayout()
-        self.txmLabel = qt.QLabel(".txm file:")
-        self.txmPathEdit = ctk.ctkPathLineEdit()
+        # Load external .ui and bind widgets
         try:
-            # ctkPathLineEdit API (Slicer 5.x)
+            uiWidget = slicer.util.loadUI(self.resourcePath('UI/ImportTXM.ui'))
+        except Exception:
+            ui_path = os.path.join(os.path.dirname(__file__), 'Resources', 'UI', 'ImportTXM.ui')
+            uiWidget = slicer.util.loadUI(ui_path)
+        self.layout.addWidget(uiWidget)
+        self.ui = slicer.util.childWidgetVariables(uiWidget)
+
+        # Aliases (optional, keep old attribute names)
+        self.txmPathEdit  = self.ui.txmPathEdit
+        self.outDirEdit   = self.ui.outDirEdit
+        self.unitCombo    = self.ui.unitCombo
+        self.flipZCheck   = self.ui.flipZCheck
+        self.importBtn    = self.ui.importBtn
+        self.metaBtn      = self.ui.metaBtn
+        self.spacingLabel = self.ui.spacingLabel
+        self.infoText     = self.ui.infoText
+        self.progress     = self.ui.progress
+
+        # Configure ctkPathLineEdit filters (API compatibility)
+        try:
             self.txmPathEdit.filters = ctk.ctkPathLineEdit().Files
         except Exception:
             try:
                 self.txmPathEdit.setFilters(ctk.ctkPathLineEdit().Files)
             except Exception:
                 pass
-        self.txmPathEdit.nameFilters = ["ZEISS TXM (*.txm)"]
-        fileRow.addWidget(self.txmLabel)
-        fileRow.addWidget(self.txmPathEdit)
-        self.layout.addLayout(fileRow)
-
-        # Output folder selector
-        outRow = qt.QHBoxLayout()
-        self.outLabel = qt.QLabel("Output folder:")
-        self.outDirEdit = ctk.ctkPathLineEdit()
         try:
             self.outDirEdit.filters = ctk.ctkPathLineEdit().Dirs
         except Exception:
@@ -87,62 +90,26 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
                 self.outDirEdit.setFilters(ctk.ctkPathLineEdit().Dirs)
             except Exception:
                 pass
-        outRow.addWidget(self.outLabel)
-        outRow.addWidget(self.outDirEdit)
-        self.layout.addLayout(outRow)
+        try:
+            self.txmPathEdit.nameFilters = ["ZEISS TXM (*.txm)"]
+        except Exception:
+            pass
+        try:
+            self.unitCombo.setCurrentIndex(0)  # micrometers (µm)
+        except Exception:
+            pass
 
-        # Options (unit and Z flip)
-        optsRow = qt.QHBoxLayout()
-
-        self.unitLabel = qt.QLabel("Unit of pixel_size:")
-        self.unitCombo = qt.QComboBox()
-        self.unitCombo.addItems(["micrometers (µm)", "millimeters (mm)"])
-        self.unitCombo.setCurrentIndex(0)
-
-        self.flipZCheck = qt.QCheckBox("Flip Z")
-
-        optsRow.addWidget(self.unitLabel)
-        optsRow.addWidget(self.unitCombo, 1)
-        optsRow.addWidget(self.flipZCheck)
-        self.layout.addLayout(optsRow)
-
-        # Buttons
-        btnRow = qt.QHBoxLayout()
-        self.importBtn = qt.QPushButton("Import & Load")
-        self.importBtn.toolTip = "Read TXM → save NRRD → load volume in Slicer"
-        self.metaBtn = qt.QPushButton("Show Metadata")
-        self.metaBtn.enabled = False
-        btnRow.addWidget(self.importBtn, 2)
-        btnRow.addWidget(self.metaBtn, 1)
-        self.layout.addLayout(btnRow)
-
-        # Status + applied spacing
-        spacingRow = qt.QHBoxLayout()
-        self.spacingLabel = qt.QLabel("Applied spacing (mm): —")
-        spacingRow.addWidget(self.spacingLabel)
-        self.layout.addLayout(spacingRow)
-
-        self.infoText = qt.QTextEdit()
-        self.infoText.readOnly = True
-        self.infoText.setFixedHeight(130)
-        self.layout.addWidget(self.infoText)
-
-        # Progress bar
-        self.progress = qt.QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.layout.addWidget(self.progress)
-
-        # Signals
+        # Signal connections
         self.importBtn.clicked.connect(self.onImport)
         self.metaBtn.clicked.connect(self.onShowMeta)
 
-        # Stretch
-        self.layout.addStretch(1)
-
+        # Internal state
         self._lastMeta = None
         self._lastNRRD = None
         self._lastNode = None
+
+        self.layout.addStretch(1)
+
 
     # ---------------------------- GUI helpers ---------------------------- #
 
