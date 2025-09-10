@@ -255,35 +255,41 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         clean_info.update({"min_diam_pct": float(minDiamPct), "bbox_diag": float(bbox_diag)})
         self.last_clean_poly = poly
 
-        # Area and volume
-        A_mesh, V_mesh = self._surface_area_and_volume(poly)
-       
-        # Pore count via genus
+        # ---- NEW: se a superfície estiver aberta, capear somente a maior abertura ----
+        closed_by_cap = False
+        cap_name = None
+        if self._has_open_boundary(poly):
+            poly, cap_name = self._cap_largest_opening(poly)
+            closed_by_cap = True
+
+
+        # Area e volume (se houver tampa, computamos área SEM a tampa)
+        A_total, V_mesh = self._surface_area_and_volume(poly)   # inclui tampa, se existir
+        if closed_by_cap and cap_name:
+            A_mesh = self._surface_area_excluding_cap(poly, cap_array_name=cap_name)
+        else:
+            A_mesh = A_total
+
+        # Pore count via genus (cap não altera genus dos poros)
         pore_count = self._genus_based_pore_count(poly)
 
-        # Derived
+        # Derivados
         S_over_V = (A_mesh / V_mesh) if V_mesh > 0 else float('nan')
         pore_density = (pore_count / A_mesh) if A_mesh > 0 else float('nan')  # #/mm²
-        
 
-        # Thickness (medial)
+        # Thickness (medial) — usa poly FECHADO para o DT, mas exclui tampa nas estatísticas
         thick = None
         if thickness_enabled:
             try:
-                # generate map and get stats
                 sitk_img, info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(thickness_voxel_mm))
                 self.last_thick_img = sitk_img; self.last_thick_info = info
-                arr = sitk.GetArrayFromImage(sitk_img)
-                vals = arr[np.isfinite(arr) & (arr>0)]
-                if vals.size == 0:
-                    thick = {"mean_mm": 0.0, "std_mm": 0.0, "voxel_mm": float(thickness_voxel_mm)}
-                else:
-                    thick = {"mean_mm": float(np.mean(vals)), "std_mm": float(np.std(vals)), "voxel_mm": float(thickness_voxel_mm)}
+                # estatística amostrando na malha e ignorando vertices da tampa
+                thick = self._thickness_stats_from_mesh_sampling(poly, sitk_img, info, cap_array_name=cap_name if closed_by_cap else None)
             except Exception as e:
                 logging.error(f"Thickness (medial) error: {e}")
                 thick = None
 
-        # Porosity (%)
+        # Porosidade (%)
         if pore_count and pore_count > 0:
             porosity_pct = (pore_density / float(pore_count)) * 100.0
         else:
@@ -291,17 +297,19 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
 
         metrics = {
             "count_pores": int(pore_count),
-            "surface_area_mm2": float(A_mesh),
+            "surface_area_mm2": float(A_mesh),                # área útil (sem tampa, se houve)
+            "surface_area_with_cap_mm2": float(A_total),      # informativa
             "volume_mm3": float(V_mesh),
             "S_over_V": float(S_over_V),
             "pore_density_per_mm2": float(pore_density),
             "porosity_pct": float(porosity_pct), 
             "cleaning": clean_info,
+            "closed_by_cap": bool(closed_by_cap),             # informativa
             "thickness_mm": thick
         }
-
         self.last_metrics = metrics
         return metrics
+
 
     # ---------- Render (HTML) ----------
     def _resource_path(self, rel):
@@ -351,7 +359,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             "porosity_pct": self._fmt(m.get('porosity_pct'), p=2),
             "thick_mean_um":         thick_mean_um,
             "thick_sd_um":           thick_sd_um,
-            "thick_voxel_um":        thick_voxel_um,
+            # "thick_voxel_um":        thick_voxel_um,
             "foot_left":             (f"Time ≈ {elapsed:.2f} s • " if elapsed is not None else ""),
             "note":                  note,
         }
@@ -371,7 +379,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                     f"<p>S/V: {ctx['s_over_v']} mm⁻¹</p>"
                     f"<p>Pore density: {ctx['pore_density_per_mm2']} mm⁻²</p>"
                     f"<p>Thickness mean: {ctx['thick_mean_um']} µm</p>"
-                    f"<p>Thickness voxel: {ctx['thick_voxel_um']} µm</p>"
+                    # f"<p>Thickness voxel: {ctx['thick_voxel_um']} µm</p>"
                     f"<div class='sub'>{ctx['foot_left']}Mesh-only</div>"
                     f"{ctx['note']}</body></html>")
 
@@ -453,6 +461,165 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         mp = vtk.vtkMassProperties(); mp.SetInputData(poly); mp.Update()
         return float(mp.GetSurfaceArea()), float(mp.GetVolume())
 
+    # ---- OPEN / CAP HELPERS ----
+    def _has_open_boundary(self, poly):
+        fe = vtk.vtkFeatureEdges()
+        fe.SetInputData(poly)
+        fe.BoundaryEdgesOn(); fe.NonManifoldEdgesOn()
+        fe.FeatureEdgesOff(); fe.ManifoldEdgesOff()
+        fe.Update()
+        return fe.GetOutput().GetNumberOfCells() > 0
+
+    def _extract_boundary_regions(self, poly):
+        fe = vtk.vtkFeatureEdges()
+        fe.SetInputData(poly)
+        fe.BoundaryEdgesOn(); fe.NonManifoldEdgesOff()
+        fe.FeatureEdgesOff(); fe.ManifoldEdgesOff()
+        fe.Update()
+        edges = fe.GetOutput()
+        if edges.GetNumberOfCells() == 0:
+            return []
+        conn = vtk.vtkPolyDataConnectivityFilter()
+        conn.SetInputData(edges); conn.SetExtractionModeToAllRegions()
+        conn.ColorRegionsOn(); conn.Update()
+        loops = []
+        for rid in range(conn.GetNumberOfExtractedRegions()):
+            c2 = vtk.vtkPolyDataConnectivityFilter()
+            c2.SetInputData(edges); c2.SetExtractionModeToSpecifiedRegions()
+            c2.AddSpecifiedRegion(rid); c2.Update()
+            loops.append(self._prepare_polydata(c2.GetOutput()))
+        return loops
+
+    def _best_fit_frame(self, P):
+        c = P.mean(axis=0)
+        M = P - c
+        _, _, Vt = np.linalg.svd(M, full_matrices=False)
+        n = Vt[-1]; u = Vt[0]; v = Vt[1]
+        return c, u, v, n
+
+    def _project_to_frame(self, P, c, u, v):
+        M = P - c
+        x = M @ u; y = M @ v
+        return np.c_[x, y]
+
+    def _cap_largest_opening(self, poly):
+        """Capa SOMENTE a maior borda aberta e marca as faces da tampa com IS_CAP=1."""
+        loops = self._extract_boundary_regions(poly)
+        if not loops:
+            return self._prepare_polydata(poly), None
+
+        # escolhe a maior abertura por área projetada no plano de melhor ajuste
+        best = None; best_area = -1.0; best_pts = None; best_frame = None
+        for lp in loops:
+            pts = ns.vtk_to_numpy(lp.GetPoints().GetData())
+            if pts.shape[0] < 3: 
+                continue
+            c,u,v,n = self._best_fit_frame(pts)
+            P2 = self._project_to_frame(pts, c,u,v)
+            # área 2D pela regra do sapateiro
+            x = P2[:,0]; y = P2[:,1]
+            A = 0.5*abs(np.dot(x, np.roll(y,-1)) - np.dot(y, np.roll(x,-1)))
+            if A > best_area:
+                best_area = A; best = lp; best_pts = pts; best_frame = (c,u,v,n)
+        if best is None:
+            return self._prepare_polydata(poly), None
+
+        # ordena contorno e triangula no 2D
+        c,u,v,n = best_frame
+        P2 = self._project_to_frame(best_pts, c,u,v)
+        ang = np.arctan2(P2[:,1]-P2[:,1].mean(), P2[:,0]-P2[:,0].mean())
+        order = np.argsort(ang); P2 = P2[order]
+
+        pts2d = vtk.vtkPoints()
+        for p in P2: pts2d.InsertNextPoint(float(p[0]), float(p[1]), 0.0)
+        polyline = vtk.vtkCellArray()
+        ids = list(range(len(P2))) + [0]
+        polyline.InsertNextCell(len(ids))
+        for i in ids: polyline.InsertCellPoint(i)
+
+        contour = vtk.vtkPolyData(); contour.SetPoints(pts2d); contour.SetLines(polyline)
+        tri = vtk.vtkContourTriangulator(); tri.SetInputData(contour); tri.Update()
+        cap2d = tri.GetOutput()
+
+        # volta ao 3D: (x,y,0) -> c + x*u + y*v
+        cap_pts3d = vtk.vtkPoints()
+        cap_pts2 = ns.vtk_to_numpy(cap2d.GetPoints().GetData())
+        for x,y,_ in cap_pts2:
+            p3 = c + x*u + y*v
+            cap_pts3d.InsertNextPoint(float(p3[0]), float(p3[1]), float(p3[2]))
+        cap3d = vtk.vtkPolyData()
+        cap3d.SetPoints(cap_pts3d); cap3d.SetPolys(cap2d.GetPolys())
+
+        # marca a tampa
+        cap_flag = vtk.vtkIntArray(); cap_flag.SetName("IS_CAP")
+        cap_flag.SetNumberOfComponents(1); cap_flag.SetNumberOfTuples(cap3d.GetNumberOfCells()); cap_flag.Fill(1)
+        cap3d.GetCellData().AddArray(cap_flag)
+
+        # base recebe IS_CAP=0
+        base = vtk.vtkPolyData(); base.DeepCopy(poly)
+        zeros = vtk.vtkIntArray(); zeros.SetName("IS_CAP")
+        zeros.SetNumberOfComponents(1); zeros.SetNumberOfTuples(base.GetNumberOfCells()); zeros.Fill(0)
+        base.GetCellData().AddArray(zeros)
+
+        app = vtk.vtkAppendPolyData(); app.AddInputData(base); app.AddInputData(cap3d); app.Update()
+        tf = vtk.vtkTriangleFilter(); tf.SetInputData(app.GetOutput()); tf.Update()
+        clean = vtk.vtkCleanPolyData(); clean.SetInputData(tf.GetOutput()); clean.Update()
+        out = clean.GetOutput()
+        return out, "IS_CAP"
+
+    def _surface_area_excluding_cap(self, tri_poly, cap_array_name="IS_CAP"):
+        """Soma área dos triângulos ignorando células com IS_CAP=1."""
+        cap_arr = tri_poly.GetCellData().GetArray(cap_array_name) if cap_array_name else None
+        tri = vtk.vtkTriangle(); area = 0.0
+        cells = tri_poly.GetPolys(); cells.InitTraversal(); idList = vtk.vtkIdList()
+        idx = 0
+        while cells.GetNextCell(idList):
+            if idList.GetNumberOfIds() != 3:
+                idx += 1; continue
+            if cap_arr and cap_arr.GetTuple1(idx) == 1:
+                idx += 1; continue
+            p0 = tri_poly.GetPoint(idList.GetId(0))
+            p1 = tri_poly.GetPoint(idList.GetId(1))
+            p2 = tri_poly.GetPoint(idList.GetId(2))
+            area += vtk.vtkTriangle.TriangleArea(p0,p1,p2)
+            idx += 1
+        return float(area)
+
+    def _cap_points_mask(self, poly, cap_array_name="IS_CAP"):
+        """Retorna um set com os IDs de pontos que pertencem a células IS_CAP=1."""
+        cap_arr = poly.GetCellData().GetArray(cap_array_name) if cap_array_name else None
+        if not cap_arr: return set()
+        cells = poly.GetPolys(); cells.InitTraversal(); idList = vtk.vtkIdList()
+        excl = set(); idx = 0
+        while cells.GetNextCell(idList):
+            if cap_arr.GetTuple1(idx) == 1:
+                for j in range(idList.GetNumberOfIds()):
+                    excl.add(idList.GetId(j))
+            idx += 1
+        return excl
+
+    def _thickness_stats_from_mesh_sampling(self, poly_with_cap, thick_img, info, cap_array_name="IS_CAP"):
+        """Amostra a espessura nos vértices e faz média/DP ignorando a tampa."""
+        spacing = np.array(info["spacing"]); origin = np.array(info["origin"])
+        arr = sitk.GetArrayFromImage(thick_img); nz, ny, nx = arr.shape
+        pts = poly_with_cap.GetPoints(); npts = pts.GetNumberOfPoints()
+        excl_pts = self._cap_points_mask(poly_with_cap, cap_array_name)
+        vals = []
+        for pid in range(npts):
+            if pid in excl_pts: continue
+            x,y,z = pts.GetPoint(pid)
+            i = int(round((x - origin[0]) / spacing[0]))
+            j = int(round((y - origin[1]) / spacing[1]))
+            k = int(round((z - origin[2]) / spacing[2]))
+            if 0 <= i < nx and 0 <= j < ny and 0 <= k < nz:
+                v = float(arr[k, j, i])
+                if v > 0: vals.append(v)
+        if not vals:
+            return {"mean_mm": 0.0, "std_mm": 0.0, "voxel_mm": float(spacing[0])}
+        vals = np.asarray(vals, dtype=np.float32)
+        return {"mean_mm": float(vals.mean()), "std_mm": float(vals.std()), "voxel_mm": float(spacing[0])}
+
+
     def _genus_based_pore_count(self, poly):
         conn = vtk.vtkPolyDataConnectivityFilter(); conn.SetInputData(poly)
         conn.SetExtractionModeToAllRegions(); conn.ColorRegionsOn(); conn.Update()
@@ -469,6 +636,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
     def _fast_edge_count(self, poly):
         extr = vtk.vtkExtractEdges(); extr.SetInputData(poly); extr.Update()
         return extr.GetOutput().GetNumberOfLines()
+
 
     # ---------- Voxelization + map (Medial 2×distance) ----------
     def _voxelize_poly(self, poly, voxel_mm=0.003, margin_vox=1):
@@ -536,6 +704,12 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             minDiamMM = (bbox_diag * (float(minDiamPct)/100.0)) if minDiamPct and bbox_diag>0 else 0.0
             poly, _ = self._remove_isolated_pieces_by_diameter(poly, minDiamMM, removeUnref=removeUnref)
             self.last_clean_poly = poly
+
+            # ---- NEW: se a superfície estiver aberta, capear somente a maior abertura ----
+            if self._has_open_boundary(poly):
+                poly, _ = self._cap_largest_opening(poly)
+
+
             # thickness map
             thick_img, info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(voxel_mm))
             self.last_thick_img = thick_img; self.last_thick_info = info
@@ -575,6 +749,12 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 minDiamMM = (bbox_diag * (float(minDiamPct)/100.0)) if minDiamPct and bbox_diag>0 else 0.0
                 poly, _ = self._remove_isolated_pieces_by_diameter(poly, minDiamMM, removeUnref=removeUnref)
                 self.last_clean_poly = poly
+
+                # ---- NEW: se a superfície estiver aberta, capear somente a maior abertura ----
+                if self._has_open_boundary(poly):
+                    poly, _ = self._cap_largest_opening(poly)
+
+
                 self.last_thick_img, self.last_thick_info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(voxel_mm))
             # create MRML volume from image
             volNode = self._thickness_volume_node_from_sitk(self.last_thick_img*1000, name="Thickness")
@@ -644,6 +824,11 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         # copy mesh for model
         polyCopy = vtk.vtkPolyData(); polyCopy.DeepCopy(poly)
         pts = polyCopy.GetPoints(); npts = pts.GetNumberOfPoints()
+
+        # NEW: zera espessura em vértices que pertencem à tampa (IS_CAP=1)
+        exclude_pts = self._cap_points_mask(polyCopy, cap_array_name="IS_CAP")
+
+
         thickVals = vtk.vtkFloatArray(); thickVals.SetName("Thickness_mm"); thickVals.SetNumberOfTuples(npts)
         for pid in range(npts):
             x,y,z = pts.GetPoint(pid)
@@ -654,6 +839,11 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 val = float(arr[k, j, i])
             else:
                 val = 0.0
+
+            if pid in exclude_pts:
+                thickVals.SetValue(pid, 0.0)
+                continue
+
             thickVals.SetValue(pid, val)
         polyCopy.GetPointData().AddArray(thickVals)
         polyCopy.GetPointData().SetActiveScalars("Thickness_mm")
@@ -709,52 +899,6 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             clean = vtk.vtkCleanPolyData(); clean.SetInputData(out); clean.Update(); out = clean.GetOutput()
         return out, info
 
-    # # ---------- Outer area for V/A ----------
-    # def _outer_surface_area_mm2_from_poly(self, poly, voxel_mm=0.003):
-    #     """Shell area in contact with the EXTERIOR (mm²), via voxelization and face counting."""
-    #     mask, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(voxel_mm))
-    #     mask_u8 = sitk.Cast(mask>0, sitk.sitkUInt8)
-    #     outside = self._outside_from_mask(mask_u8)
-    #     arr_w = sitk.GetArrayFromImage(mask_u8)>0   # (z,y,x)
-    #     arr_o = sitk.GetArrayFromImage(outside)>0
-    #     sx, sy, sz = spacing  # (x,y,z) mm
-    #     # faces perpendicular to X (pairs along x)
-    #     c1 = np.count_nonzero(arr_w[:, :, :-1] & arr_o[:, :, 1:])
-    #     c2 = np.count_nonzero(arr_o[:, :, :-1] & arr_w[:, :, 1:])
-    #     area_x = (c1 + c2) * (sy * sz)
-    #     # faces perpendicular to Y
-    #     c1 = np.count_nonzero(arr_w[:, :-1, :] & arr_o[:, 1:, :])
-    #     c2 = np.count_nonzero(arr_o[:, :-1, :] & arr_w[:, 1:, :])
-    #     area_y = (c1 + c2) * (sx * sz)
-    #     # faces perpendicular to Z
-    #     c1 = np.count_nonzero(arr_w[:-1, :, :] & arr_o[1:, :, :])
-    #     c2 = np.count_nonzero(arr_o[:-1, :, :] & arr_w[1:, :, :])
-    #     area_z = (c1 + c2) * (sx * sy)
-    #     return float(area_x + area_y + area_z)
-
-    # def _outside_from_mask(self, mask_u8):
-    #     inv = sitk.BinaryNot(mask_u8)
-    #     cc = sitk.ConnectedComponent(inv)
-    #     stats = sitk.LabelShapeStatisticsImageFilter(); stats.Execute(cc)
-    #     size = mask_u8.GetSize()  # (x,y,z)
-    #     outside_label = None; outside_count = -1
-    #     for lbl in stats.GetLabels():
-    #         x, sx_, y, sy_, z, sz_ = stats.GetBoundingBox(lbl)
-    #         touches = (x==0 or y==0 or z==0 or (x+sx_==size[0]) or (y+sy_==size[1]) or (z+sz_==size[2]))
-    #         if touches:
-    #             n = stats.GetNumberOfPixels(lbl)
-    #             if n > outside_count:
-    #                 outside_label, outside_count = lbl, n
-    #     if outside_label is None:
-    #         # fallback: largest background component
-    #         lbls = list(stats.GetLabels())
-    #         if not lbls:
-    #             return inv
-    #         outside_label = max(lbls, key=lambda L: stats.GetNumberOfPixels(L))
-    #     outside = sitk.Equal(cc, int(outside_label))
-    #     outside = sitk.Cast(outside, sitk.sitkUInt8)
-    #     outside.CopyInformation(mask_u8)
-    #     return outside
 
 # =========================================================
 # Tests (placeholder)
