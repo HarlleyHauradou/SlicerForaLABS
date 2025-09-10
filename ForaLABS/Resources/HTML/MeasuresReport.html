@@ -58,24 +58,24 @@
 <body>
     <div class="grid">
         <div class="card">
-            <div class="title">Pore count (genus)</div>
+            <div class="title">Pores</div>
             <div class="metric">${pore_count}</div>
-            <div class="sub">Number of handles/tunnels in the triangulated mesh.</div>
+            <div class="sub">Number of handles/tunnels in the mesh.</div>
         </div>
         <div class="card">
             <div class="title">Surface area</div>
             <div class="metric">${surface_area_mm2} <span class="sub">mm²</span></div>
-            <div class="sub">Total mesh area (VTK MassProperties).</div>
+            <div class="sub">Total mesh area.</div>
         </div>
         <div class="card">
             <div class="title">Volume</div>
             <div class="metric">${volume_mm3} <span class="sub">mm³</span></div>
-            <div class="sub">Solid volume from mesh (VTK MassProperties).</div>
+            <div class="sub">Solid volume from mesh.</div>
         </div>
         <div class="card">
             <div class="title">S/V</div>
             <div class="metric">${s_over_v} <span class="sub">mm⁻¹</span></div>
-            <div class="sub">Area/volume ratio (MeshLab-like).</div>
+            <div class="sub">Area/volume ratio.</div>
         </div>
         <div class="card">
             <div class="title">Pore density</div>
@@ -91,16 +91,12 @@
             <div class="title">Shell thickness</div>
             <table>
                 <tr>
-                    <th>Mean (medial)</th>
+                    <th>Mean</th>
                     <td>${thick_mean_um} µm</td>
                 </tr>
                 <tr>
-                    <th>SD (medial)</th>
+                    <th>SD</th>
                     <td>${thick_sd_um} µm</td>
-                </tr>
-                <tr>
-                    <th>Voxel</th>
-                    <td>${thick_voxel_um} µm</td>
                 </tr>
             </table>
         </div>
