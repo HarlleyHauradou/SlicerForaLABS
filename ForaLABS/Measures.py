@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import time
 import logging
@@ -12,9 +13,8 @@ import slicer
 
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
-
 from string import Template
-import os, numpy as np
+
 
 # =========================================================
 # Module
@@ -24,14 +24,17 @@ class Measures(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "Measures"
         self.parent.categories = ["ForaLABS"]
-        self.parent.contributors = ["Harlley Hauradou (Nuclear Engineering Program of UFRJ)", "Thaís Hauradou (Nuclear Engineering Program of UFRJ)"]
+        self.parent.contributors = [
+            "Harlley Hauradou (Nuclear Engineering Program of UFRJ)",
+            "Thaís Hauradou (Nuclear Engineering Program of UFRJ)"
+        ]
         self.parent.helpText = (
-            "Computes measures directly from a segment's mesh (Closed surface): Pore count, and Pore density (count/area)." 
-            "\nIncludes MeshLab-like cleaning: "
-            "Remove Isolated Pieces (wrt Diameter) with threshold in % of the BBox diagonal. Measures thickness by "
-            "distance to the medial surface (2×distance) and generates a **thickness map** (NRRD volume + mesh colormap)."
+            "Computes measures directly from a segment's mesh (Closed surface): "
+            "Pore count, pore density (count/area), porosity (pore density / pore count × 100), "
+            "surface area, volume, S/V, thickness (medial, mean/std) and generates a thickness map."
         )
         self.parent.acknowledgementText = ""
+
 
 # =========================================================
 # Widget (UI)
@@ -45,27 +48,40 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         try:
             uiWidget = slicer.util.loadUI(self.resourcePath('UI/Measures.ui'))
         except Exception:
-            import os
             ui_path = os.path.join(os.path.dirname(__file__), 'Resources', 'UI', 'Measures.ui')
             uiWidget = slicer.util.loadUI(ui_path)
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
         # Optional aliases (keep old attribute names)
-        self.segSelector           = self.ui.segSelector
-        self.wallSegmentCombo      = self.ui.wallSegmentCombo
-        self.refreshSegsBtn        = self.ui.refreshSegsButton
-        self.minDiamPctSpin        = self.ui.minDiamPctSpin
-        self.removeUnrefCheck      = self.ui.removeUnrefCheck
-        self.computeBtn            = self.ui.computeButton
-        self.exportBtn             = self.ui.exportButton
-        self.saveMeshBtn           = self.ui.saveMeshButton
-        self.outputBrowser         = self.ui.outputBrowser
-        self.thickVoxelSpin        = self.ui.thickVoxelSpin
-        self.genThickBtn           = self.ui.genThickButton
-        self.expThickBtn           = self.ui.expThickButton
-        self.showThickBtn          = self.ui.showThickButton
-        self.statusLabel           = getattr(self.ui, 'statusLabel', qt.QLabel())
+        self.segSelector      = self.ui.segSelector
+        self.wallSegmentCombo = self.ui.wallSegmentCombo
+        self.refreshSegsBtn   = self.ui.refreshSegsButton
+
+        self.minDiamPctSpin   = self.ui.minDiamPctSpin
+        self.removeUnrefCheck = self.ui.removeUnrefCheck
+
+        # NEW: checkboxes de seleção de métricas
+        self.chkPores         = self.ui.checkPores
+        self.chkPorosity      = self.ui.checkPorosity
+        self.chkArea          = self.ui.checkArea
+        self.chkVolume        = self.ui.checkVolume
+        self.chkSoverV        = self.ui.checkSoverV
+        self.chkPoreDensity   = self.ui.checkPoreDensity
+        self.chkThickness     = self.ui.checkThickness
+        self.chkCleaningNote  = self.ui.checkCleaning
+
+        self.computeBtn       = self.ui.computeButton
+        self.exportBtn        = self.ui.exportButton
+        self.saveMeshBtn      = self.ui.saveMeshButton
+        self.outputBrowser    = self.ui.outputBrowser
+
+        self.thickVoxelSpin   = self.ui.thickVoxelSpin
+        self.genThickBtn      = self.ui.genThickButton
+        self.expThickBtn      = self.ui.expThickButton
+        self.showThickBtn     = self.ui.showThickButton
+
+        self.statusLabel      = getattr(self.ui, 'statusLabel', qt.QLabel())
 
         # MRML hookup required for qMRMLNodeComboBox in .ui
         self.segSelector.setMRMLScene(slicer.mrmlScene)
@@ -81,16 +97,18 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.layout.addStretch(1)
 
-
     # ---- UI helpers ----
     def onRefreshSegments(self):
         self.wallSegmentCombo.clear()
         segNode = self.segSelector.currentNode()
-        if not segNode: return
+        if not segNode:
+            return
         seg = segNode.GetSegmentation()
-        ids = vtk.vtkStringArray(); seg.GetSegmentIDs(ids)
+        ids = vtk.vtkStringArray()
+        seg.GetSegmentIDs(ids)
         for i in range(ids.GetNumberOfValues()):
-            sid = ids.GetValue(i); name = seg.GetSegment(sid).GetName()
+            sid = ids.GetValue(i)
+            name = seg.GetSegment(sid).GetName()
             self.wallSegmentCombo.addItem(f"{name} [{sid}]", sid)
 
     def _currentSegmentId(self):
@@ -100,49 +118,82 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             sid = str(self.wallSegmentCombo.currentData)
         return sid
 
+    def _selectedMeasures(self):
+        """Lê o estado dos checkboxes e devolve um dicionário de seleção."""
+        return {
+            "pores":        bool(self.chkPores.isChecked()),
+            "porosity":     bool(self.chkPorosity.isChecked()),
+            "area":         bool(self.chkArea.isChecked()),
+            "volume":       bool(self.chkVolume.isChecked()),
+            "s_over_v":     bool(self.chkSoverV.isChecked()),
+            "pore_density": bool(self.chkPoreDensity.isChecked()),
+            "thickness":    bool(self.chkThickness.isChecked()),
+            "cleaning":     bool(self.chkCleaningNote.isChecked()),
+        }
+
     # ---- Actions ----
     def onCompute(self):
-        segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
-        wallSid = self._currentSegmentId(); assert wallSid, "Select the WALL segment."
+        segNode = self.segSelector.currentNode()
+        assert segNode, "Select a SegmentationNode."
+        wallSid = self._currentSegmentId()
+        assert wallSid, "Select the WALL segment."
 
-        # read parameters
-        try: minPct = float(self.minDiamPctSpin.value())
-        except TypeError: minPct = float(self.minDiamPctSpin.value)
-        try: rmUnref = bool(self.removeUnrefCheck.isChecked())
-        except TypeError: rmUnref = bool(self.removeUnrefCheck.checked)
+        # parâmetros de limpeza
+        try:
+            minPct = float(self.minDiamPctSpin.value())
+        except TypeError:
+            minPct = float(self.minDiamPctSpin.value)
+        try:
+            rmUnref = bool(self.removeUnrefCheck.isChecked())
+        except TypeError:
+            rmUnref = bool(self.removeUnrefCheck.checked)
 
-        # thickness 
-        try: 
+        # voxel do mapa de espessura (caso selecionado)
+        try:
             thickVoxel = float(self.thickVoxelSpin.value())
-        except TypeError: 
+        except TypeError:
             thickVoxel = float(self.thickVoxelSpin.value)
 
-        self.statusLabel.text = "Computing…"; slicer.app.processEvents()
+        # seleção de métricas
+        selected = self._selectedMeasures()
+        self.logic.last_selection = selected  # guarda para export
+
+        self.statusLabel.text = "Computing…"
+        slicer.app.processEvents()
         t0 = time.perf_counter()
         metrics = self.logic.compute_metrics(
             segNode, wallSid,
-            minDiamPct=minPct, removeUnref=rmUnref, thickness_voxel_mm=thickVoxel
+            minDiamPct=minPct,
+            removeUnref=rmUnref,
+            thickness_enabled=bool(selected.get("thickness", True)),
+            thickness_voxel_mm=thickVoxel
         )
         dt = time.perf_counter() - t0
 
-        html = self.logic.render_metrics_html(metrics, elapsed=dt)
+        html = self.logic.render_metrics_html(metrics, elapsed=dt, selected=selected)
         self.outputBrowser.setHtml(html)
         self.statusLabel.text = f"Metrics computed (≈ {dt:.2f} s)."
 
     def onExport(self):
-        metrics = self.logic.last_metrics; assert metrics, "Compute metrics first."
+        metrics = self.logic.last_metrics
+        assert metrics, "Compute metrics first."
         outDir = qt.QFileDialog.getExistingDirectory(None, "Choose output folder")
-        if not outDir: return
+        if not outDir:
+            return
         pdfPath = self.logic.export_results(outDir)
         qt.QMessageBox.information(slicer.util.mainWindow(), "Measures", f"Exported: - {pdfPath}")
 
     def onSaveCleanMesh(self):
-        # Save cleaned mesh (after island removal) as STL/PLY
         if getattr(self.logic, 'last_clean_poly', None) is None:
-            qt.QMessageBox.warning(slicer.util.mainWindow(), "Measures", "Compute metrics first (it generates the cleaned mesh).")
+            qt.QMessageBox.warning(
+                slicer.util.mainWindow(), "Measures",
+                "Compute metrics first (it generates the cleaned mesh)."
+            )
             return
         try:
-            fn = qt.QFileDialog.getSaveFileName(None, "Save cleaned mesh", "", "STL (*.stl);;PLY (*.ply)")
+            fn = qt.QFileDialog.getSaveFileName(
+                None, "Save cleaned mesh", "", "STL (*.stl);;PLY (*.ply)"
+            )
             outPath = fn[0] if isinstance(fn, tuple) else fn
         except Exception:
             outPath = None
@@ -150,16 +201,27 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
         ok, finalPath = self.logic.save_clean_mesh(outPath)
         if ok:
-            qt.QMessageBox.information(slicer.util.mainWindow(), "Measures", f"Mesh saved to: {finalPath}")
+            qt.QMessageBox.information(
+                slicer.util.mainWindow(), "Measures",
+                f"Mesh saved to: {finalPath}"
+            )
         else:
-            qt.QMessageBox.critical(slicer.util.mainWindow(), "Measures", "Failed to save cleaned mesh.")
+            qt.QMessageBox.critical(
+                slicer.util.mainWindow(), "Measures",
+                "Failed to save cleaned mesh."
+            )
 
     def onGenerateThicknessMap(self):
-        segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
-        wallSid = self._currentSegmentId(); assert wallSid, "Select the WALL segment."
-        try: voxel = float(self.thickVoxelSpin.value())
-        except TypeError: voxel = float(self.thickVoxelSpin.value)
-        # robustly read cleaning (CTK may expose value as a property)
+        segNode = self.segSelector.currentNode()
+        assert segNode, "Select a SegmentationNode."
+        wallSid = self._currentSegmentId()
+        assert wallSid, "Select the WALL segment."
+        try:
+            voxel = float(self.thickVoxelSpin.value())
+        except TypeError:
+            voxel = float(self.thickVoxelSpin.value)
+
+        # limpeza
         try:
             mdp = float(self.minDiamPctSpin.value())
         except TypeError:
@@ -168,26 +230,35 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError:
             rmUnref = bool(self.removeUnrefCheck.checked)
-        self.statusLabel.text = "Generating thickness map…"; slicer.app.processEvents()
-        ok, modelNode = self.logic.generate_thickness_map_on_mesh(segNode, wallSid, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref)
-        if ok:
-            self.statusLabel.text = "Map applied to mesh (see colored model in the scene)."
-        else:
-            self.statusLabel.text = "Failed to generate thickness map. Check the log."
+
+        self.statusLabel.text = "Generating thickness map…"
+        slicer.app.processEvents()
+        ok, modelNode = self.logic.generate_thickness_map_on_mesh(
+            segNode, wallSid, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref
+        )
+        self.statusLabel.text = (
+            "Map applied to mesh (see colored model in the scene)." if ok
+            else "Failed to generate thickness map. Check the log."
+        )
 
     def onExportThicknessMap(self):
-        segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
-        wallSid = self._currentSegmentId(); assert wallSid, "Select the WALL segment."
-        try: voxel = float(self.thickVoxelSpin.value())
-        except TypeError: voxel = float(self.thickVoxelSpin.value)
+        segNode = self.segSelector.currentNode()
+        assert segNode, "Select a SegmentationNode."
+        wallSid = self._currentSegmentId()
+        assert wallSid, "Select the WALL segment."
         try:
-            fn = qt.QFileDialog.getSaveFileName(None, "Export thickness map (NRRD)", "thickness_map.nrrd", "NRRD (*.nrrd)")
+            voxel = float(self.thickVoxelSpin.value())
+        except TypeError:
+            voxel = float(self.thickVoxelSpin.value)
+        try:
+            fn = qt.QFileDialog.getSaveFileName(
+                None, "Export thickness map (NRRD)", "thickness_map.nrrd", "NRRD (*.nrrd)"
+            )
             outPath = fn[0] if isinstance(fn, tuple) else fn
         except Exception:
             outPath = None
         if not outPath:
             return
-        # robustly read cleaning
         try:
             mdp = float(self.minDiamPctSpin.value())
         except TypeError:
@@ -196,23 +267,35 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError:
             rmUnref = bool(self.removeUnrefCheck.checked)
-        self.statusLabel.text = "Computing & exporting map (NRRD)…"; slicer.app.processEvents()
-        ok, finalPath = self.logic.export_thickness_nrrd(segNode, wallSid, outPath, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref)
+
+        self.statusLabel.text = "Computing & exporting map (NRRD)…"
+        slicer.app.processEvents()
+        ok, finalPath = self.logic.export_thickness_nrrd(
+            segNode, wallSid, outPath, voxel_mm=voxel,
+            minDiamPct=mdp, removeUnref=rmUnref
+        )
         if ok:
-            qt.QMessageBox.information(slicer.util.mainWindow(), "Measures", f"Map saved to: {finalPath}")
+            qt.QMessageBox.information(
+                slicer.util.mainWindow(), "Measures",
+                f"Map saved to: {finalPath}"
+            )
             self.statusLabel.text = "NRRD map exported."
         else:
-            qt.QMessageBox.critical(slicer.util.mainWindow(), "Measures", "Failed to export map.")
+            qt.QMessageBox.critical(
+                slicer.util.mainWindow(), "Measures",
+                "Failed to export map."
+            )
             self.statusLabel.text = "Failed to export map."
 
     def onShowThicknessMapSlices(self):
-        segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
-        wallSid = self._currentSegmentId(); assert wallSid, "Select the WALL segment."
+        segNode = self.segSelector.currentNode()
+        assert segNode, "Select a SegmentationNode."
+        wallSid = self._currentSegmentId()
+        assert wallSid, "Select the WALL segment."
         try:
             voxel = float(self.thickVoxelSpin.value())
         except TypeError:
             voxel = float(self.thickVoxelSpin.value)
-        # cleaning
         try:
             mdp = float(self.minDiamPctSpin.value())
         except TypeError:
@@ -221,13 +304,16 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError:
             rmUnref = bool(self.removeUnrefCheck.checked)
-        self.statusLabel.text = "Preparing thickness volume…"; slicer.app.processEvents()
-        ok, volNode = self.logic.show_thickness_in_slices(segNode, wallSid, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref)
-        if ok:
-            self.statusLabel.text = "Map displayed in slice views (Red/Yellow/Green)."
-        else:
-            self.statusLabel.text = "Failed to show in slices. Check the log."
 
+        self.statusLabel.text = "Preparing thickness volume…"
+        slicer.app.processEvents()
+        ok, volNode = self.logic.show_thickness_in_slices(
+            segNode, wallSid, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref
+        )
+        self.statusLabel.text = (
+            "Map displayed in slice views (Red/Yellow/Green)." if ok
+            else "Failed to show in slices. Check the log."
+        )
 
 
 # =========================================================
@@ -241,79 +327,77 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         self.last_thick_img = None  # SimpleITK Image
         self.last_thick_info = None # dict: {spacing, origin, shape}
         self.last_thick_model = None # vtkMRMLModelNode
+        self.last_selection = {
+            "pores": True, "porosity": True, "area": True, "volume": True,
+            "s_over_v": True, "pore_density": True, "thickness": True, "cleaning": True
+        }
 
     def compute_metrics(self, segNode, wallSegmentId, minDiamPct=10.0, removeUnref=True,
-                       thickness_enabled=True, thickness_voxel_mm=0.003):
+                        thickness_enabled=True, thickness_voxel_mm=0.003):
         poly = self._segment_to_polydata(segNode, wallSegmentId)
         poly = self._prepare_polydata(poly)
 
-        # Pre-clean: remove isolated pieces by diameter relative to BBox diagonal (MeshLab-like)
-        bounds = poly.GetBounds(); dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
+        # Pre-clean
+        bounds = poly.GetBounds()
+        dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
         bbox_diag = (dx*dx + dy*dy + dz*dz)**0.5 if poly.GetNumberOfPoints()>0 else 0.0
         minDiamMM = (bbox_diag * (float(minDiamPct)/100.0)) if minDiamPct and bbox_diag>0 else 0.0
         poly, clean_info = self._remove_isolated_pieces_by_diameter(poly, minDiamMM, removeUnref=removeUnref)
         clean_info.update({"min_diam_pct": float(minDiamPct), "bbox_diag": float(bbox_diag)})
         self.last_clean_poly = poly
 
-        # ---- NEW: se a superfície estiver aberta, capear somente a maior abertura ----
-        closed_by_cap = False
-        cap_name = None
-        if self._has_open_boundary(poly):
-            poly, cap_name = self._cap_largest_opening(poly)
-            closed_by_cap = True
+        # Area and volume
+        A_mesh, V_mesh = self._surface_area_and_volume(poly)
 
-
-        # Area e volume (se houver tampa, computamos área SEM a tampa)
-        A_total, V_mesh = self._surface_area_and_volume(poly)   # inclui tampa, se existir
-        if closed_by_cap and cap_name:
-            A_mesh = self._surface_area_excluding_cap(poly, cap_array_name=cap_name)
-        else:
-            A_mesh = A_total
-
-        # Pore count via genus (cap não altera genus dos poros)
+        # Pore count via genus
         pore_count = self._genus_based_pore_count(poly)
 
-        # Derivados
+        # Derived
         S_over_V = (A_mesh / V_mesh) if V_mesh > 0 else float('nan')
         pore_density = (pore_count / A_mesh) if A_mesh > 0 else float('nan')  # #/mm²
 
-        # Thickness (medial) — usa poly FECHADO para o DT, mas exclui tampa nas estatísticas
+        # Thickness (medial) — opcional
         thick = None
         if thickness_enabled:
             try:
                 sitk_img, info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(thickness_voxel_mm))
                 self.last_thick_img = sitk_img; self.last_thick_info = info
-                # estatística amostrando na malha e ignorando vertices da tampa
-                thick = self._thickness_stats_from_mesh_sampling(poly, sitk_img, info, cap_array_name=cap_name if closed_by_cap else None)
+                arr = sitk.GetArrayFromImage(sitk_img)
+                vals = arr[np.isfinite(arr) & (arr>0)]
+                if vals.size == 0:
+                    thick = {"mean_mm": 0.0, "std_mm": 0.0, "voxel_mm": float(thickness_voxel_mm)}
+                else:
+                    thick = {"mean_mm": float(np.mean(vals)), "std_mm": float(np.std(vals)), "voxel_mm": float(thickness_voxel_mm)}
             except Exception as e:
                 logging.error(f"Thickness (medial) error: {e}")
                 thick = None
+        else:
+            # se desabilitado, limpamos o último espessura para não exportar por engano
+            self.last_thick_img = None
+            self.last_thick_info = None
 
-        # Porosidade (%)
-        if pore_count and pore_count > 0:
+        # Porosity (%): densidade de poros / contagem * 100
+        if pore_count and pore_count > 0 and np.isfinite(pore_density):
             porosity_pct = (pore_density / float(pore_count)) * 100.0
         else:
             porosity_pct = float('nan')
 
         metrics = {
             "count_pores": int(pore_count),
-            "surface_area_mm2": float(A_mesh),                # área útil (sem tampa, se houve)
-            "surface_area_with_cap_mm2": float(A_total),      # informativa
+            "surface_area_mm2": float(A_mesh),
             "volume_mm3": float(V_mesh),
             "S_over_V": float(S_over_V),
             "pore_density_per_mm2": float(pore_density),
-            "porosity_pct": float(porosity_pct), 
+            "porosity_pct": float(porosity_pct),
             "cleaning": clean_info,
-            "closed_by_cap": bool(closed_by_cap),             # informativa
             "thickness_mm": thick
         }
+
         self.last_metrics = metrics
         return metrics
 
-
     # ---------- Render (HTML) ----------
     def _resource_path(self, rel):
-        # Mesmo esquema do self.resourcePath do Slicer, com fallback local
         try:
             return self.resourcePath(rel)
         except Exception:
@@ -324,67 +408,81 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             return "—"
         return f"{float(x):.{p}f}"
 
-    def render_metrics_html(self, m: dict, elapsed: float = None) -> str:
-        # ---- nota de limpeza (igual ao seu código) ----
-        note = ""
-        clean = m.get('cleaning') or {}
+    def _cleaning_note_html(self, clean: dict) -> str:
+        if not clean:
+            return ""
         try:
             md = float(clean.get('min_diam_mm', 0.0))
             mp = float(clean.get('min_diam_pct', 0.0))
             bb = float(clean.get('bbox_diag', 0.0))
-            if mp > 0.0:
-                kept = int(clean.get('regions_kept', 0))
-                total = int(clean.get('regions_total', 0))
-                overflow = bool(clean.get('overflow_largest_only', False))
-                extra = " (fallback: largest component only)" if overflow else ""
-                note = (f"<div class='sub' style='margin-top:6px;'>"
-                        f"Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. "
-                        f"(≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>")
+            kept = int(clean.get('regions_kept', 0))
+            total = int(clean.get('regions_total', 0))
+            overflow = bool(clean.get('overflow_largest_only', False))
+            extra = " (fallback: largest component only)" if overflow else ""
+            if mp <= 0.0:
+                return ""
+            return (f"<div class='sub' style='margin-top:6px;'>"
+                    f"Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. "
+                    f"(≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>")
         except Exception:
-            pass
+            return ""
 
-        # ---- thickness ----
+    def render_metrics_html(self, m: dict, elapsed: float = None, selected: dict = None) -> str:
+        sel = selected or self.last_selection or {}
+        # valores em µm para espessura
         thick = m.get('thickness_mm') or {}
-        thick_mean_um  = self._fmt((thick.get('mean_mm')  * 1000.0) if thick else None, p=3)
-        thick_sd_um    = self._fmt((thick.get('std_mm')   * 1000.0) if thick else None, p=3)
-        thick_voxel_um = self._fmt((thick.get('voxel_mm') * 1000.0) if thick else None, p=3)
+        thick_mean_um  = (thick.get('mean_mm')  * 1000.0) if thick else None
+        thick_sd_um    = (thick.get('std_mm')   * 1000.0) if thick else None
+        thick_voxel_um = (thick.get('voxel_mm') * 1000.0) if thick else None
 
-        # ---- contexto para o template ----
-        ctx = {
-            "pore_count":            int(m.get('count_pores') or 0),
-            "surface_area_mm2":      self._fmt(m.get('surface_area_mm2'), p=6),
-            "volume_mm3":            self._fmt(m.get('volume_mm3'), p=6),
-            "s_over_v":              self._fmt(m.get('S_over_V'), p=6),
-            "pore_density_per_mm2":  self._fmt(m.get('pore_density_per_mm2'), p=6),
-            "porosity_pct": self._fmt(m.get('porosity_pct'), p=2),
-            "thick_mean_um":         thick_mean_um,
-            "thick_sd_um":           thick_sd_um,
-            # "thick_voxel_um":        thick_voxel_um,
-            "foot_left":             (f"Time ≈ {elapsed:.2f} s • " if elapsed is not None else ""),
-            "note":                  note,
-        }
+        rows = []
+        if sel.get("pores", True):
+            rows.append(f"<tr><td>Pores</td><td>{int(m.get('count_pores') or 0)}</td></tr>")
+        if sel.get("porosity", True):
+            rows.append(f"<tr><td>Porosity (%)</td><td>{self._fmt(m.get('porosity_pct'), p=2)}</td></tr>")
+        if sel.get("area", True):
+            rows.append(f"<tr><td>Surface area (mm²)</td><td>{self._fmt(m.get('surface_area_mm2'), p=6)}</td></tr>")
+        if sel.get("volume", True):
+            rows.append(f"<tr><td>Volume (mm³)</td><td>{self._fmt(m.get('volume_mm3'), p=6)}</td></tr>")
+        if sel.get("s_over_v", True):
+            rows.append(f"<tr><td>S/V (mm⁻¹)</td><td>{self._fmt(m.get('S_over_V'), p=6)}</td></tr>")
+        if sel.get("pore_density", True):
+            rows.append(f"<tr><td>Pore density (mm⁻²)</td><td>{self._fmt(m.get('pore_density_per_mm2'), p=6)}</td></tr>")
+        if sel.get("thickness", True) and thick:
+            rows.append(f"<tr><td>Thickness mean (µm)</td><td>{self._fmt(thick_mean_um, p=3)}</td></tr>")
+            rows.append(f"<tr><td>Thickness std (µm)</td><td>{self._fmt(thick_sd_um, p=3)}</td></tr>")
+            rows.append(f"<tr><td>Thickness voxel (µm)</td><td>{self._fmt(thick_voxel_um, p=3)}</td></tr>")
 
-        # ---- carrega template e substitui ----
-        tpl_path = self._resource_path('HTML/MeasuresReport.html')
-        try:
-            with open(tpl_path, 'r', encoding='utf-8') as f:
-                tpl = Template(f.read())
-            return tpl.safe_substitute(ctx)
-        except Exception as e:
-            # Fallback: algo mínimo se o template não estiver disponível
-            return (f"<html><body><h3>Measures</h3>"
-                    f"<p>Pores: {ctx['pore_count']}</p>"
-                    f"<p>Area: {ctx['surface_area_mm2']} mm²</p>"
-                    f"<p>Volume: {ctx['volume_mm3']} mm³</p>"
-                    f"<p>S/V: {ctx['s_over_v']} mm⁻¹</p>"
-                    f"<p>Pore density: {ctx['pore_density_per_mm2']} mm⁻²</p>"
-                    f"<p>Thickness mean: {ctx['thick_mean_um']} µm</p>"
-                    # f"<p>Thickness voxel: {ctx['thick_voxel_um']} µm</p>"
-                    f"<div class='sub'>{ctx['foot_left']}Mesh-only</div>"
-                    f"{ctx['note']}</body></html>")
+        note_html = self._cleaning_note_html(m.get('cleaning') or {}) if sel.get("cleaning", True) else ""
+        foot = f"<div class='sub'>Time ≈ {elapsed:.2f} s • Mesh-only</div>" if elapsed is not None else ""
 
+        table = "\n".join(rows) if rows else "<tr><td colspan='2'>No metrics selected.</td></tr>"
 
-     # ---------- EXPORT Helper ----------
+        html = f"""
+        <html>
+        <head>
+            <meta charset="utf-8" />
+            <style>
+            body {{ font-family: Arial, Helvetica, sans-serif; }}
+            h3 {{ margin-bottom: 4px; }}
+            table {{ border-collapse: collapse; width: 100%; }}
+            td {{ border-bottom: 1px solid #e0e0e0; padding: 6px 8px; vertical-align: middle; }}
+            .sub {{ color: #666; font-size: 11px; }}
+            </style>
+        </head>
+        <body>
+            <h3>Measures</h3>
+            <table>
+                {table}
+            </table>
+            {note_html}
+            {foot}
+        </body>
+        </html>
+        """
+        return html
+
+    # ---------- EXPORT Helper ----------
     def _save_html_to_pdf(self, html: str, out_path: str):
         doc = qt.QTextDocument()
         doc.setHtml(html)
@@ -392,7 +490,6 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         printer = qt.QPrinter()
         printer.setOutputFormat(qt.QPrinter.PdfFormat)
         printer.setOutputFileName(out_path)
-        # Página A4 com margens suaves (mm)
         try:
             printer.setPaperSize(qt.QPrinter.A4)
         except Exception:
@@ -400,10 +497,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         try:
             printer.setPageMargins(10, 10, 10, 10, qt.QPrinter.Millimeter)
         except Exception:
-            # Alguns bindings não expõem essa sobrecarga; podemos ignorar
             pass
 
-        # PyQt usa print_, PySide usa print — tratamos os dois:
         if hasattr(doc, "print_"):
             doc.print_(printer)
         else:
@@ -411,8 +506,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
 
     # ---------- Export ----------
     def export_results(self, outDir):
-        import os, logging
-        html = self.render_metrics_html(self.last_metrics or {}, elapsed=None)
+        html = self.render_metrics_html(self.last_metrics or {}, elapsed=None, selected=self.last_selection)
         if not os.path.isdir(outDir):
             os.makedirs(outDir, exist_ok=True)
         pdfPath = os.path.join(outDir, "Measures_mesh_metrics.pdf")
@@ -420,14 +514,11 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         logging.info(f"Exported: {pdfPath}")
         return pdfPath
 
-
     def save_clean_mesh(self, outPath):
-        """Saves the cleaned mesh (last generated) as STL or PLY. Returns (ok, finalPath)."""
         try:
             poly_in = getattr(self, 'last_clean_poly', None)
             if poly_in is None:
                 return False, outPath
-            # Triangulate and clean for safety
             tf = vtk.vtkTriangleFilter(); tf.SetInputData(poly_in); tf.Update()
             clean = vtk.vtkCleanPolyData(); clean.SetInputData(tf.GetOutput()); clean.Update()
             poly = clean.GetOutput()
@@ -449,7 +540,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
     def _segment_to_polydata(self, segNode, segmentId):
         if not segNode.GetSegmentation().ContainsRepresentation("Closed surface"):
             segNode.CreateClosedSurfaceRepresentation()
-        poly = vtk.vtkPolyData(); segNode.GetClosedSurfaceRepresentation(segmentId, poly)
+        poly = vtk.vtkPolyData()
+        segNode.GetClosedSurfaceRepresentation(segmentId, poly)
         return poly
 
     def _prepare_polydata(self, poly):
@@ -460,165 +552,6 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
     def _surface_area_and_volume(self, poly):
         mp = vtk.vtkMassProperties(); mp.SetInputData(poly); mp.Update()
         return float(mp.GetSurfaceArea()), float(mp.GetVolume())
-
-    # ---- OPEN / CAP HELPERS ----
-    def _has_open_boundary(self, poly):
-        fe = vtk.vtkFeatureEdges()
-        fe.SetInputData(poly)
-        fe.BoundaryEdgesOn(); fe.NonManifoldEdgesOn()
-        fe.FeatureEdgesOff(); fe.ManifoldEdgesOff()
-        fe.Update()
-        return fe.GetOutput().GetNumberOfCells() > 0
-
-    def _extract_boundary_regions(self, poly):
-        fe = vtk.vtkFeatureEdges()
-        fe.SetInputData(poly)
-        fe.BoundaryEdgesOn(); fe.NonManifoldEdgesOff()
-        fe.FeatureEdgesOff(); fe.ManifoldEdgesOff()
-        fe.Update()
-        edges = fe.GetOutput()
-        if edges.GetNumberOfCells() == 0:
-            return []
-        conn = vtk.vtkPolyDataConnectivityFilter()
-        conn.SetInputData(edges); conn.SetExtractionModeToAllRegions()
-        conn.ColorRegionsOn(); conn.Update()
-        loops = []
-        for rid in range(conn.GetNumberOfExtractedRegions()):
-            c2 = vtk.vtkPolyDataConnectivityFilter()
-            c2.SetInputData(edges); c2.SetExtractionModeToSpecifiedRegions()
-            c2.AddSpecifiedRegion(rid); c2.Update()
-            loops.append(self._prepare_polydata(c2.GetOutput()))
-        return loops
-
-    def _best_fit_frame(self, P):
-        c = P.mean(axis=0)
-        M = P - c
-        _, _, Vt = np.linalg.svd(M, full_matrices=False)
-        n = Vt[-1]; u = Vt[0]; v = Vt[1]
-        return c, u, v, n
-
-    def _project_to_frame(self, P, c, u, v):
-        M = P - c
-        x = M @ u; y = M @ v
-        return np.c_[x, y]
-
-    def _cap_largest_opening(self, poly):
-        """Capa SOMENTE a maior borda aberta e marca as faces da tampa com IS_CAP=1."""
-        loops = self._extract_boundary_regions(poly)
-        if not loops:
-            return self._prepare_polydata(poly), None
-
-        # escolhe a maior abertura por área projetada no plano de melhor ajuste
-        best = None; best_area = -1.0; best_pts = None; best_frame = None
-        for lp in loops:
-            pts = ns.vtk_to_numpy(lp.GetPoints().GetData())
-            if pts.shape[0] < 3: 
-                continue
-            c,u,v,n = self._best_fit_frame(pts)
-            P2 = self._project_to_frame(pts, c,u,v)
-            # área 2D pela regra do sapateiro
-            x = P2[:,0]; y = P2[:,1]
-            A = 0.5*abs(np.dot(x, np.roll(y,-1)) - np.dot(y, np.roll(x,-1)))
-            if A > best_area:
-                best_area = A; best = lp; best_pts = pts; best_frame = (c,u,v,n)
-        if best is None:
-            return self._prepare_polydata(poly), None
-
-        # ordena contorno e triangula no 2D
-        c,u,v,n = best_frame
-        P2 = self._project_to_frame(best_pts, c,u,v)
-        ang = np.arctan2(P2[:,1]-P2[:,1].mean(), P2[:,0]-P2[:,0].mean())
-        order = np.argsort(ang); P2 = P2[order]
-
-        pts2d = vtk.vtkPoints()
-        for p in P2: pts2d.InsertNextPoint(float(p[0]), float(p[1]), 0.0)
-        polyline = vtk.vtkCellArray()
-        ids = list(range(len(P2))) + [0]
-        polyline.InsertNextCell(len(ids))
-        for i in ids: polyline.InsertCellPoint(i)
-
-        contour = vtk.vtkPolyData(); contour.SetPoints(pts2d); contour.SetLines(polyline)
-        tri = vtk.vtkContourTriangulator(); tri.SetInputData(contour); tri.Update()
-        cap2d = tri.GetOutput()
-
-        # volta ao 3D: (x,y,0) -> c + x*u + y*v
-        cap_pts3d = vtk.vtkPoints()
-        cap_pts2 = ns.vtk_to_numpy(cap2d.GetPoints().GetData())
-        for x,y,_ in cap_pts2:
-            p3 = c + x*u + y*v
-            cap_pts3d.InsertNextPoint(float(p3[0]), float(p3[1]), float(p3[2]))
-        cap3d = vtk.vtkPolyData()
-        cap3d.SetPoints(cap_pts3d); cap3d.SetPolys(cap2d.GetPolys())
-
-        # marca a tampa
-        cap_flag = vtk.vtkIntArray(); cap_flag.SetName("IS_CAP")
-        cap_flag.SetNumberOfComponents(1); cap_flag.SetNumberOfTuples(cap3d.GetNumberOfCells()); cap_flag.Fill(1)
-        cap3d.GetCellData().AddArray(cap_flag)
-
-        # base recebe IS_CAP=0
-        base = vtk.vtkPolyData(); base.DeepCopy(poly)
-        zeros = vtk.vtkIntArray(); zeros.SetName("IS_CAP")
-        zeros.SetNumberOfComponents(1); zeros.SetNumberOfTuples(base.GetNumberOfCells()); zeros.Fill(0)
-        base.GetCellData().AddArray(zeros)
-
-        app = vtk.vtkAppendPolyData(); app.AddInputData(base); app.AddInputData(cap3d); app.Update()
-        tf = vtk.vtkTriangleFilter(); tf.SetInputData(app.GetOutput()); tf.Update()
-        clean = vtk.vtkCleanPolyData(); clean.SetInputData(tf.GetOutput()); clean.Update()
-        out = clean.GetOutput()
-        return out, "IS_CAP"
-
-    def _surface_area_excluding_cap(self, tri_poly, cap_array_name="IS_CAP"):
-        """Soma área dos triângulos ignorando células com IS_CAP=1."""
-        cap_arr = tri_poly.GetCellData().GetArray(cap_array_name) if cap_array_name else None
-        tri = vtk.vtkTriangle(); area = 0.0
-        cells = tri_poly.GetPolys(); cells.InitTraversal(); idList = vtk.vtkIdList()
-        idx = 0
-        while cells.GetNextCell(idList):
-            if idList.GetNumberOfIds() != 3:
-                idx += 1; continue
-            if cap_arr and cap_arr.GetTuple1(idx) == 1:
-                idx += 1; continue
-            p0 = tri_poly.GetPoint(idList.GetId(0))
-            p1 = tri_poly.GetPoint(idList.GetId(1))
-            p2 = tri_poly.GetPoint(idList.GetId(2))
-            area += vtk.vtkTriangle.TriangleArea(p0,p1,p2)
-            idx += 1
-        return float(area)
-
-    def _cap_points_mask(self, poly, cap_array_name="IS_CAP"):
-        """Retorna um set com os IDs de pontos que pertencem a células IS_CAP=1."""
-        cap_arr = poly.GetCellData().GetArray(cap_array_name) if cap_array_name else None
-        if not cap_arr: return set()
-        cells = poly.GetPolys(); cells.InitTraversal(); idList = vtk.vtkIdList()
-        excl = set(); idx = 0
-        while cells.GetNextCell(idList):
-            if cap_arr.GetTuple1(idx) == 1:
-                for j in range(idList.GetNumberOfIds()):
-                    excl.add(idList.GetId(j))
-            idx += 1
-        return excl
-
-    def _thickness_stats_from_mesh_sampling(self, poly_with_cap, thick_img, info, cap_array_name="IS_CAP"):
-        """Amostra a espessura nos vértices e faz média/DP ignorando a tampa."""
-        spacing = np.array(info["spacing"]); origin = np.array(info["origin"])
-        arr = sitk.GetArrayFromImage(thick_img); nz, ny, nx = arr.shape
-        pts = poly_with_cap.GetPoints(); npts = pts.GetNumberOfPoints()
-        excl_pts = self._cap_points_mask(poly_with_cap, cap_array_name)
-        vals = []
-        for pid in range(npts):
-            if pid in excl_pts: continue
-            x,y,z = pts.GetPoint(pid)
-            i = int(round((x - origin[0]) / spacing[0]))
-            j = int(round((y - origin[1]) / spacing[1]))
-            k = int(round((z - origin[2]) / spacing[2]))
-            if 0 <= i < nx and 0 <= j < ny and 0 <= k < nz:
-                v = float(arr[k, j, i])
-                if v > 0: vals.append(v)
-        if not vals:
-            return {"mean_mm": 0.0, "std_mm": 0.0, "voxel_mm": float(spacing[0])}
-        vals = np.asarray(vals, dtype=np.float32)
-        return {"mean_mm": float(vals.mean()), "std_mm": float(vals.std()), "voxel_mm": float(spacing[0])}
-
 
     def _genus_based_pore_count(self, poly):
         conn = vtk.vtkPolyDataConnectivityFilter(); conn.SetInputData(poly)
@@ -637,7 +570,6 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         extr = vtk.vtkExtractEdges(); extr.SetInputData(poly); extr.Update()
         return extr.GetOutput().GetNumberOfLines()
 
-
     # ---------- Voxelization + map (Medial 2×distance) ----------
     def _voxelize_poly(self, poly, voxel_mm=0.003, margin_vox=1):
         bounds = poly.GetBounds()
@@ -650,14 +582,13 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 int(np.ceil(dz/sp[2]))+2*margin_vox]
         origin = [bounds[0]-margin_vox*sp[0], bounds[2]-margin_vox*sp[1], bounds[4]-margin_vox*sp[2]]
         img = vtk.vtkImageData(); img.SetSpacing(sp); img.SetOrigin(origin); img.SetDimensions(dims); img.AllocateScalars(vtk.VTK_UNSIGNED_CHAR,1)
-        # fill with 1
         arr = np.ones((dims[2], dims[1], dims[0]), dtype=np.uint8)
         vtkArr = ns.numpy_to_vtk(arr.ravel(order='C'), deep=1, array_type=vtk.VTK_UNSIGNED_CHAR)
         img.GetPointData().SetScalars(vtkArr)
-        # mesh stencil
         p2s = vtk.vtkPolyDataToImageStencil(); p2s.SetInputData(poly); p2s.SetOutputSpacing(sp); p2s.SetOutputOrigin(origin); p2s.SetOutputWholeExtent(img.GetExtent()); p2s.Update()
         st = vtk.vtkImageStencil(); st.SetInputData(img); st.SetStencilConnection(p2s.GetOutputPort()); st.ReverseStencilOff(); st.SetBackgroundValue(0); st.Update()
-        out = st.GetOutput(); out_arr = ns.vtk_to_numpy(out.GetPointData().GetScalars()).reshape(dims[2], dims[1], dims[0])
+        out = st.GetOutput()
+        out_arr = ns.vtk_to_numpy(out.GetPointData().GetScalars()).reshape(dims[2], dims[1], dims[0])
         sitk_img = sitk.GetImageFromArray(out_arr.astype(np.uint8))
         sitk_img.SetSpacing(tuple(sp))
         sitk_img.SetOrigin(tuple(origin))
@@ -666,19 +597,14 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
     def _thickness_map_medial_from_poly(self, poly, voxel_mm=0.003):
         mask, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(voxel_mm))
         mask_u8 = sitk.Cast(mask>0, sitk.sitkUInt8)
-        # Internal DT (mm)
         dt = sitk.SignedMaurerDistanceMap(mask_u8, insideIsPositive=True, squaredDistance=False, useImageSpacing=True, backgroundValue=0)
-        # approximate medial as local maxima of DT (26-neighborhood)
         gd = sitk.GrayscaleDilate(dt, [1,1,1])
         medial = sitk.Equal(dt, gd)
-        # Distance to medial (mm)
         d2m = sitk.SignedMaurerDistanceMap(sitk.Cast(medial, sitk.sitkUInt8), insideIsPositive=False, squaredDistance=False, useImageSpacing=True, backgroundValue=0)
         arr = sitk.GetArrayFromImage(d2m)
         thick_arr = 2.0 * arr
-        # zero outside the object
         mask_arr = sitk.GetArrayFromImage(mask_u8) > 0
         thick_arr = np.where(mask_arr, thick_arr, 0.0).astype(np.float32)
-        # create SITK image for thickness
         thick_img = sitk.GetImageFromArray(thick_arr)
         thick_img.SetSpacing(spacing)
         thick_img.SetOrigin(origin)
@@ -698,22 +624,14 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         try:
             poly = self._segment_to_polydata(segNode, wallSegmentId)
             poly = self._prepare_polydata(poly)
-            # same cleaning as metrics
-            bounds = poly.GetBounds(); dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
+            bounds = poly.GetBounds()
+            dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
             bbox_diag = (dx*dx + dy*dy + dz*dz)**0.5 if poly.GetNumberOfPoints()>0 else 0.0
             minDiamMM = (bbox_diag * (float(minDiamPct)/100.0)) if minDiamPct and bbox_diag>0 else 0.0
             poly, _ = self._remove_isolated_pieces_by_diameter(poly, minDiamMM, removeUnref=removeUnref)
             self.last_clean_poly = poly
-
-            # ---- NEW: se a superfície estiver aberta, capear somente a maior abertura ----
-            if self._has_open_boundary(poly):
-                poly, _ = self._cap_largest_opening(poly)
-
-
-            # thickness map
             thick_img, info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(voxel_mm))
             self.last_thick_img = thick_img; self.last_thick_info = info
-            # paint mesh
             modelNode = self._paint_poly_with_thickness(poly, thick_img, info)
             self.last_thick_model = modelNode
             return True, modelNode
@@ -723,13 +641,12 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
 
     def export_thickness_nrrd(self, segNode, wallSegmentId, outPath, voxel_mm=0.003, minDiamPct=10.0, removeUnref=True):
         try:
-            # if we already have it, save directly
             if self.last_thick_img is not None:
                 sitk.WriteImage(self.last_thick_img, outPath)
                 return True, outPath
-            # otherwise, generate and save
-            ok, _ = self.generate_thickness_map_on_mesh(segNode, wallSegmentId, voxel_mm=float(voxel_mm),
-                                                        minDiamPct=minDiamPct, removeUnref=removeUnref)
+            ok, _ = self.generate_thickness_map_on_mesh(
+                segNode, wallSegmentId, voxel_mm=float(voxel_mm),
+                minDiamPct=minDiamPct, removeUnref=removeUnref)
             if not ok or self.last_thick_img is None:
                 return False, outPath
             sitk.WriteImage(self.last_thick_img, outPath)
@@ -740,25 +657,17 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
 
     def show_thickness_in_slices(self, segNode, wallSegmentId, voxel_mm=0.003, minDiamPct=10.0, removeUnref=True):
         try:
-            # ensure thickness image
             if self.last_thick_img is None:
                 poly = self._segment_to_polydata(segNode, wallSegmentId)
                 poly = self._prepare_polydata(poly)
-                bounds = poly.GetBounds(); dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
+                bounds = poly.GetBounds()
+                dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
                 bbox_diag = (dx*dx + dy*dy + dz*dz)**0.5 if poly.GetNumberOfPoints()>0 else 0.0
                 minDiamMM = (bbox_diag * (float(minDiamPct)/100.0)) if minDiamPct and bbox_diag>0 else 0.0
                 poly, _ = self._remove_isolated_pieces_by_diameter(poly, minDiamMM, removeUnref=removeUnref)
                 self.last_clean_poly = poly
-
-                # ---- NEW: se a superfície estiver aberta, capear somente a maior abertura ----
-                if self._has_open_boundary(poly):
-                    poly, _ = self._cap_largest_opening(poly)
-
-
                 self.last_thick_img, self.last_thick_info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(voxel_mm))
-            # create MRML volume from image
             volNode = self._thickness_volume_node_from_sitk(self.last_thick_img*1000, name="Thickness")
-            # set as background in the three slice views
             try:
                 slicer.util.setSliceViewerLayers(background=volNode, fit=True)
             except Exception:
@@ -775,10 +684,9 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             return False, None
 
     def _thickness_volume_node_from_sitk(self, sitk_img, name="Measures_ThicknessNRRD"):
-        arr = sitk.GetArrayFromImage(sitk_img).astype(np.float32)  # (k,j,i)
+        arr = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
         volNode = slicer.util.addVolumeFromArray(arr)
         volNode.SetName(name)
-        # apply spacing/origin
         sp = sitk_img.GetSpacing(); org = sitk_img.GetOrigin()
         try:
             volNode.SetSpacing(sp)
@@ -786,7 +694,6 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         except Exception:
             if volNode.GetImageData():
                 volNode.GetImageData().SetSpacing(sp)
-        # colormap and window/level
         disp = volNode.GetDisplayNode()
         if disp:
             try:
@@ -802,7 +709,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 disp.AutoWindowLevelOn()
             except Exception:
                 pass
-        # hide zero voxels: apply threshold > 0
+        # esconder zero (sem cor)
         try:
             disp.SetLowerThreshold(1e-12)
             disp.SetUpperThreshold(1e9)
@@ -816,19 +723,13 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         return volNode
 
     def _paint_poly_with_thickness(self, poly, thick_img, info):
-        # sample nearest-neighbor thickness volume at each vertex
-        spacing = np.array(info["spacing"])  # (sx,sy,sz)
-        origin  = np.array(info["origin"])   # (ox,oy,oz)
-        arr = sitk.GetArrayFromImage(thick_img)  # (k,j,i) => (z,y,x)
+        spacing = np.array(info["spacing"])
+        origin  = np.array(info["origin"])
+        arr = sitk.GetArrayFromImage(thick_img)  # (z,y,x)
         nz, ny, nx = arr.shape
-        # copy mesh for model
+
         polyCopy = vtk.vtkPolyData(); polyCopy.DeepCopy(poly)
         pts = polyCopy.GetPoints(); npts = pts.GetNumberOfPoints()
-
-        # NEW: zera espessura em vértices que pertencem à tampa (IS_CAP=1)
-        exclude_pts = self._cap_points_mask(polyCopy, cap_array_name="IS_CAP")
-
-
         thickVals = vtk.vtkFloatArray(); thickVals.SetName("Thickness_mm"); thickVals.SetNumberOfTuples(npts)
         for pid in range(npts):
             x,y,z = pts.GetPoint(pid)
@@ -839,21 +740,15 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 val = float(arr[k, j, i])
             else:
                 val = 0.0
-
-            if pid in exclude_pts:
-                thickVals.SetValue(pid, 0.0)
-                continue
-
             thickVals.SetValue(pid, val)
         polyCopy.GetPointData().AddArray(thickVals)
         polyCopy.GetPointData().SetActiveScalars("Thickness_mm")
-        # create ModelNode
+
         modelNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", "Measures_ThicknessModel")
         modelNode.SetAndObservePolyData(polyCopy)
         disp = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelDisplayNode")
         disp.SetScalarVisibility(True)
         disp.SetActiveScalarName("Thickness_mm")
-        # use MRML display node flag (not raw vtk)
         try:
             disp.SetScalarRangeFlag(slicer.vtkMRMLDisplayNode.UseDataScalarRange)
         except AttributeError:
@@ -866,9 +761,6 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
 
     # ---------- Cleaning by relative diameter ----------
     def _remove_isolated_pieces_by_diameter(self, poly, minDiamMM=0.0, removeUnref=True, hard_limit_regions=3000):
-        """Remove disconnected components whose bbox diagonal is smaller than minDiamMM.
-        If region count is too high (>hard_limit_regions), fallback: keep only largest component.
-        Returns (clean_poly, info_dict)."""
         info = {"min_diam_mm": float(minDiamMM), "regions_total": 1, "regions_kept": 1, "overflow_largest_only": False}
         if minDiamMM is None or minDiamMM <= 0.0:
             return poly, info
@@ -886,7 +778,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         app = vtk.vtkAppendPolyData(); kept = 0
         for rid in range(n):
             c2 = vtk.vtkPolyDataConnectivityFilter(); c2.SetInputData(poly); c2.SetExtractionModeToSpecifiedRegions(); c2.AddSpecifiedRegion(rid); c2.Update()
-            comp = c2.GetOutput(); bounds = comp.GetBounds(); dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
+            comp = c2.GetOutput(); bounds = comp.GetBounds()
+            dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
             diam = (dx*dx + dy*dy + dz*dz)**0.5
             if diam >= float(minDiamMM):
                 app.AddInputData(comp); kept += 1
