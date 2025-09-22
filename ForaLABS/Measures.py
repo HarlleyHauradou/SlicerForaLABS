@@ -333,7 +333,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         }
 
     def compute_metrics(self, segNode, wallSegmentId, minDiamPct=10.0, removeUnref=True,
-                        thickness_enabled=True, thickness_voxel_mm=0.003):
+                        thickness_enabled=True, thickness_voxel_mm=0.003000):
         poly = self._segment_to_polydata(segNode, wallSegmentId)
         poly = self._prepare_polydata(poly)
 
