@@ -760,7 +760,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         return modelNode
 
     # ---------- Cleaning by relative diameter ----------
-    def _remove_isolated_pieces_by_diameter(self, poly, minDiamMM=0.0, removeUnref=True, hard_limit_regions=3000):
+    def _remove_isolated_pieces_by_diameter(self, poly, minDiamMM=0.0, removeUnref=True, hard_limit_regions=500):
         info = {"min_diam_mm": float(minDiamMM), "regions_total": 1, "regions_kept": 1, "overflow_largest_only": False}
         if minDiamMM is None or minDiamMM <= 0.0:
             return poly, info
