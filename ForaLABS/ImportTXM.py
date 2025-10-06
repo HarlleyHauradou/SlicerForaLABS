@@ -10,7 +10,7 @@ import SimpleITK as sitk
 from slicer.ScriptedLoadableModule import *
 import qt
 import ctk
-import struct
+import struct, math
 
 
 # ---------- TXM helpers (nível de módulo) ----------
@@ -32,6 +32,23 @@ def _fmt_pt(x, ndigits=2):
     if "," in s:
         s = s.rstrip("0").rstrip(",")
     return s
+
+def _fmt_num(x, ndigits=2):
+    """Formata com ponto decimal (en-US)."""
+    if x is None:
+        return "—"
+    try:
+        f = float(str(x).replace(",", "."))   # normaliza qualquer vírgula que venha do arquivo
+    except Exception:
+        return str(x)
+    s = f"{f:.{ndigits}f}"
+    # remove zeros finais desnecessários
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+
 
 
 # -----------------------------------------------------------------------------
@@ -233,7 +250,7 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
 
         # garanta que salvou o caminho do .txm quando importou:
         # meta["txm_path"] = txm_path
-        txm_path = self._lastMeta.get("txm_path", "—")
+        txm_path = self._lastMeta.get("txm_path", "")
 
         # === bloco de texto no formato da figura ===
         block = self.render_txm_block(txm_path, self._lastMeta)
@@ -241,7 +258,7 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
         # Dialog
         dlg = qt.QDialog(slicer.util.mainWindow())
         dlg.setWindowTitle("TXM Metadata")
-        dlg.resize(760, 540)
+        dlg.resize(460, 440)
         v = qt.QVBoxLayout(dlg)
 
         # Abas
@@ -258,26 +275,26 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
             txt.setFont(f)
         except Exception:
             pass
-        tabs.addTab(txt, "Text")
+        tabs.addTab(txt, "Parameters")
 
         # TAB 2: Tabela (como você já tinha)
-        table = qt.QTableWidget()
-        table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(["Key", "Value"])
-        items = sorted([(str(k), self._safeVal(vv)) for k, vv in self._lastMeta.items()],
-                    key=lambda x: x[0].lower())
-        table.setRowCount(len(items))
-        for i, (k, val) in enumerate(items):
-            table.setItem(i, 0, qt.QTableWidgetItem(k))
-            table.setItem(i, 1, qt.QTableWidgetItem(val))
-        table.horizontalHeader().setStretchLastSection(True)
-        table.horizontalHeader().setSectionResizeMode(0, qt.QHeaderView.ResizeToContents)
-        tabs.addTab(table, "Table")
+        # table = qt.QTableWidget()
+        # table.setColumnCount(2)
+        # table.setHorizontalHeaderLabels(["Key", "Value"])
+        # items = sorted([(str(k), self._safeVal(vv)) for k, vv in self._lastMeta.items()],
+        #             key=lambda x: x[0].lower())
+        # table.setRowCount(len(items))
+        # for i, (k, val) in enumerate(items):
+        #     table.setItem(i, 0, qt.QTableWidgetItem(k))
+        #     table.setItem(i, 1, qt.QTableWidgetItem(val))
+        # table.horizontalHeader().setStretchLastSection(True)
+        # table.horizontalHeader().setSectionResizeMode(0, qt.QHeaderView.ResizeToContents)
+        # tabs.addTab(table, "Table")
 
         # Info do NRRD (se houver)
-        if self._lastNRRD:
-            lbl = qt.QLabel(f"NRRD file: <code>{html.escape(self._lastNRRD)}</code>")
-            v.addWidget(lbl)
+        # if self._lastNRRD:
+        #     lbl = qt.QLabel(f"NRRD file: <code>{html.escape(self._lastNRRD)}</code>")
+        #     v.addWidget(lbl)
 
         # Botões
         btns = qt.QHBoxLayout()
@@ -286,7 +303,7 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
             qt.QApplication.clipboard().setText(block)
         btnCopy.clicked.connect(_copy)
         btnClose = qt.QPushButton("Close")
-        btnClose.clicked.connect(dlg.accept)
+        btnClose.clicked.connect(lambda *_: dlg.accept()) 
         btns.addStretch(1)
         btns.addWidget(btnCopy)
         btns.addWidget(btnClose)
@@ -303,20 +320,21 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
             return repr(v)
 
     def render_txm_block(self, txm_path: str, meta: dict) -> str:
-        lines = [txm_path]
-        lines.append(f"Pixel size (µm) = {_fmt_pt(meta.get('pixel_size'), 3)}")
+        lines = [(f"Pixel size (µm) = {_fmt_num(meta.get('pixel_size'), 3)}")]
         lines.append(f"Image width = {meta.get('image_width', '—')}")
         lines.append(f"Image height = {meta.get('image_height', '—')}")
         lines.append(f"Number of images = {meta.get('number_of_images', '—')}")
         lines.append(f"Binning = {meta.get('binning', '—')}")
         lines.append(f"Bits per pixel = {meta.get('bits_per_pixel', '—')}")
         mag = meta.get('optical_magnification')
-        lines.append(f"Optical magnification = {(_fmt_pt(mag,0)+'X') if mag is not None else '—'}")
-        lines.append(f"Voltage (kV) = {_fmt_pt(meta.get('voltage_kv'), 1)}")
-        lines.append(f"Current (µA) = {_fmt_pt(meta.get('current_uA'), 1)}")
-        lines.append(f"Exposure Time (s) = {_fmt_pt(meta.get('exposure_s'), 1)}")
-        lines.append(f"Source to RA Distance (mm) = {_fmt_pt(meta.get('src_to_ra_mm'), 2)}")
-        lines.append(f"Detector to RA Distance (mm) = {_fmt_pt(meta.get('det_to_ra_mm'), 2)}")
+        lines.append(f"Optical magnification = {(_fmt_num(mag,0)+'X') if mag is not None else '—'}")
+        lines.append(f"Voltage (kV) = {_fmt_num(meta.get('voltage_kv'), 1)}")
+        lines.append(f"Current (µA) = {_fmt_num(meta.get('current_uA'), 1)}")
+        lines.append(f"Exposure Time (s) = {_fmt_num(meta.get('exposure_s'), 1)}")
+        lines.append(f"Source to RA Distance (cm) = {_fmt_num(meta.get('src_to_ra_mm'), 2)}")
+        lines.append(f"Detector to RA Distance (cm) = {_fmt_num(meta.get('det_to_ra_mm'), 2)}")
+        # lines.append(f"beam_hardening = {meta.get('beam_hardening', '—')}")
+        lines.append(f"Source filter = {meta.get('source_filter', '—')}")
         return "\n".join(lines)
 
 
@@ -350,12 +368,26 @@ class ImportTXMLogic(ScriptedLoadableModuleLogic):
 
         ole = olefile.OleFileIO(txmPath)
 
+
         # ---- read helpers ---- #
         def _read_stream(path):
             if not ole.exists(path):
                 return None
             with ole.openstream(path) as s:
                 return s.read()
+            
+        def _read_str(keys):
+            for k in keys:
+                b = _read_stream(k)
+                if b:
+                    try:
+                        s = b.decode("utf-8", errors="ignore").strip()
+                    except Exception:
+                        s = str(b)
+                    if s:
+                        return s
+            return None
+            
 
         def _read_int(paths):
             """Reads integer (little-endian) from one of the paths, using stream size heuristics."""
@@ -450,7 +482,7 @@ class ImportTXMLogic(ScriptedLoadableModuleLogic):
 
         # --- Extra metadata (com vários aliases típicos de TXM) ---
         binning = _read_int([
-            "ImageInfo/Binning", "Acquisition/Binning", "Scan/Binning"
+            "ImageInfo/HorizontalBin"
         ])
 
         # Bits por pixel vem do dtype já determinado
@@ -482,10 +514,9 @@ class ImportTXMLogic(ScriptedLoadableModuleLogic):
                 "ImageInfo/Current", "XRay/Current", "Scan/Current", "Acquisition/Current(uA)"
             ]))
 
-        exposure_s = _read_float([
-            "ImageInfo/ExposureTime", "ImageInfo/Exposure", "Acquisition/ExposureTime",
-            "Scan/ExposureTime"
-        ])
+        exposure_s = _reinterpret_f32_from_u32(_read_int([
+            "ImageInfo/ExpTimes"
+        ]))
         if exposure_s is None:
             exposure_s = _read_int([
                 "ImageInfo/ExposureTime", "ImageInfo/Exposure", "Acquisition/ExposureTime",
@@ -493,12 +524,18 @@ class ImportTXMLogic(ScriptedLoadableModuleLogic):
             ])
 
         src_to_ra_mm = _read_float([
-            "Geometry/SourceToRADistance", "ImageInfo/SourceToRADistance",
-            "Geometry/SrcToAxisDistance", "Geometry/SourceToCenterDistance"
+            "AutoRecon/StoRADistance"
         ])
         det_to_ra_mm = _read_float([
-            "Geometry/DetectorToRADistance", "ImageInfo/DetectorToRADistance",
-            "Geometry/DetToAxisDistance", "Geometry/DetectorToCenterDistance"
+            "AutoRecon/DtoRADistance"
+        ])
+
+        beam_hardening = _reinterpret_f32_from_u32(_read_int([
+            "AutoRecon/BeamHardening"
+        ]))
+
+        source_filter = _read_str([
+            "AutoRecon/SourceFilter"
         ])
 
 
@@ -516,8 +553,10 @@ class ImportTXMLogic(ScriptedLoadableModuleLogic):
             "voltage_kv": float(voltage_kv) if voltage_kv is not None else None,
             "current_uA": float(current_uA) if current_uA is not None else None,
             "exposure_s": float(exposure_s) if exposure_s is not None else None,
-            "src_to_ra_mm": float(src_to_ra_mm) if src_to_ra_mm is not None else None,
-            "det_to_ra_mm": float(det_to_ra_mm) if det_to_ra_mm is not None else None,
+            "src_to_ra_mm": float(src_to_ra_mm)/10000 if src_to_ra_mm is not None else None,
+            "det_to_ra_mm": float(det_to_ra_mm)/10000 if det_to_ra_mm is not None else None,
+            "beam_hardening": beam_hardening,
+            "source_filter": source_filter,
             "source": "ole-only",
         }
 
