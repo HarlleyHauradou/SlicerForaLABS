@@ -10,6 +10,28 @@ import SimpleITK as sitk
 from slicer.ScriptedLoadableModule import *
 import qt
 import ctk
+import struct
+
+
+# ---------- TXM helpers (nível de módulo) ----------
+def _reinterpret_f32_from_u32(i):
+    """Quando o TXM salva float32 mas alguém leu como inteiro (ex.: 1109393408 -> 40.0)."""
+    if i is None:
+        return None
+    try:
+        import struct
+        return struct.unpack('<f', struct.pack('<I', int(i)))[0]
+    except Exception:
+        return None
+
+def _fmt_pt(x, ndigits=2):
+    """Formata com vírgula decimal e sem zeros desnecessários."""
+    if x is None:
+        return "—"
+    s = f"{float(x):.{ndigits}f}".replace(".", ",")
+    if "," in s:
+        s = s.rstrip("0").rstrip(",")
+    return s
 
 
 # -----------------------------------------------------------------------------
@@ -25,8 +47,7 @@ class ImportTXM(ScriptedLoadableModule):
         self.parent.dependencies = []
         self.parent.contributors = ["Harlley Hauradou (Nuclear Engineering Program of UFRJ)", "Thaís Hauradou (Nuclear Engineering Program of UFRJ)"]
         self.parent.helpText = (
-            "Import ZEISS reconstructed volumes (.txm) using Python only in Slicer. "
-            "Converts spacing from µm to mm and loads as NRRD."
+            "Import ZEISS reconstructed volumes (.txm) and save as NRRD. "
         )
         self.parent.acknowledgementText = (
             ""
@@ -210,31 +231,66 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
             self._err("No metadata to display.")
             return
 
-        # Dialog with metadata table
+        # garanta que salvou o caminho do .txm quando importou:
+        # meta["txm_path"] = txm_path
+        txm_path = self._lastMeta.get("txm_path", "—")
+
+        # === bloco de texto no formato da figura ===
+        block = self.render_txm_block(txm_path, self._lastMeta)
+
+        # Dialog
         dlg = qt.QDialog(slicer.util.mainWindow())
         dlg.setWindowTitle("TXM Metadata")
         dlg.resize(760, 540)
         v = qt.QVBoxLayout(dlg)
 
+        # Abas
+        tabs = qt.QTabWidget()
+        v.addWidget(tabs)
+
+        # TAB 1: Texto (igual à figura)
+        txt = qt.QPlainTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText(block)
+        try:
+            f = txt.font()
+            f.setFamily("monospace")
+            txt.setFont(f)
+        except Exception:
+            pass
+        tabs.addTab(txt, "Text")
+
+        # TAB 2: Tabela (como você já tinha)
         table = qt.QTableWidget()
         table.setColumnCount(2)
         table.setHorizontalHeaderLabels(["Key", "Value"])
-        items = sorted([(str(k), self._safeVal(vv)) for k, vv in self._lastMeta.items()], key=lambda x: x[0].lower())
+        items = sorted([(str(k), self._safeVal(vv)) for k, vv in self._lastMeta.items()],
+                    key=lambda x: x[0].lower())
         table.setRowCount(len(items))
         for i, (k, val) in enumerate(items):
             table.setItem(i, 0, qt.QTableWidgetItem(k))
             table.setItem(i, 1, qt.QTableWidgetItem(val))
         table.horizontalHeader().setStretchLastSection(True)
         table.horizontalHeader().setSectionResizeMode(0, qt.QHeaderView.ResizeToContents)
-        v.addWidget(table)
+        tabs.addTab(table, "Table")
 
+        # Info do NRRD (se houver)
         if self._lastNRRD:
             lbl = qt.QLabel(f"NRRD file: <code>{html.escape(self._lastNRRD)}</code>")
             v.addWidget(lbl)
 
-        btn = qt.QPushButton("Close")
-        btn.clicked.connect(dlg.accept)
-        v.addWidget(btn, 0, qt.Qt.AlignRight)
+        # Botões
+        btns = qt.QHBoxLayout()
+        btnCopy = qt.QPushButton("Copy text")
+        def _copy():
+            qt.QApplication.clipboard().setText(block)
+        btnCopy.clicked.connect(_copy)
+        btnClose = qt.QPushButton("Close")
+        btnClose.clicked.connect(dlg.accept)
+        btns.addStretch(1)
+        btns.addWidget(btnCopy)
+        btns.addWidget(btnClose)
+        v.addLayout(btns)
 
         dlg.exec_()
 
@@ -245,6 +301,25 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
             return str(v)
         except Exception:
             return repr(v)
+
+    def render_txm_block(self, txm_path: str, meta: dict) -> str:
+        lines = [txm_path]
+        lines.append(f"Pixel size (µm) = {_fmt_pt(meta.get('pixel_size'), 3)}")
+        lines.append(f"Image width = {meta.get('image_width', '—')}")
+        lines.append(f"Image height = {meta.get('image_height', '—')}")
+        lines.append(f"Number of images = {meta.get('number_of_images', '—')}")
+        lines.append(f"Binning = {meta.get('binning', '—')}")
+        lines.append(f"Bits per pixel = {meta.get('bits_per_pixel', '—')}")
+        mag = meta.get('optical_magnification')
+        lines.append(f"Optical magnification = {(_fmt_pt(mag,0)+'X') if mag is not None else '—'}")
+        lines.append(f"Voltage (kV) = {_fmt_pt(meta.get('voltage_kv'), 1)}")
+        lines.append(f"Current (µA) = {_fmt_pt(meta.get('current_uA'), 1)}")
+        lines.append(f"Exposure Time (s) = {_fmt_pt(meta.get('exposure_s'), 1)}")
+        lines.append(f"Source to RA Distance (mm) = {_fmt_pt(meta.get('src_to_ra_mm'), 2)}")
+        lines.append(f"Detector to RA Distance (mm) = {_fmt_pt(meta.get('det_to_ra_mm'), 2)}")
+        return "\n".join(lines)
+
+
 
 
 # -----------------------------------------------------------------------------
@@ -373,6 +448,60 @@ class ImportTXMLogic(ScriptedLoadableModuleLogic):
             stream = f"ImageData{block}/Image{idx+1}"
             vol[idx] = _read_image(stream, np_dtype, height, width)
 
+        # --- Extra metadata (com vários aliases típicos de TXM) ---
+        binning = _read_int([
+            "ImageInfo/Binning", "Acquisition/Binning", "Scan/Binning"
+        ])
+
+        # Bits por pixel vem do dtype já determinado
+        bits_per_pixel = np.dtype(np_dtype).itemsize * 8
+
+        magnif = _read_float([
+            "ImageInfo/OpticalMagnification", "ImageInfo/Magnification",
+            "Optical/Magnification", "Acquisition/Magnification",
+        ])
+        if magnif is None:
+            magnif = _read_int([
+                "ImageInfo/OpticalMagnification", "ImageInfo/Magnification",
+                "Optical/Magnification", "Acquisition/Magnification",
+            ])
+
+        voltage_kv = _read_float([
+            "ImageInfo/Voltage", "XRay/Voltage", "Scan/Voltage", "Acquisition/Voltage(kV)"
+        ])
+        if voltage_kv is None:
+            voltage_kv = _reinterpret_f32_from_u32(_read_int([
+                "ImageInfo/Voltage", "XRay/Voltage", "Scan/Voltage", "Acquisition/Voltage(kV)"
+            ]))
+
+        current_uA = _read_float([
+            "ImageInfo/Current", "XRay/Current", "Scan/Current", "Acquisition/Current(uA)"
+        ])
+        if current_uA is None:
+            current_uA = _reinterpret_f32_from_u32(_read_int([
+                "ImageInfo/Current", "XRay/Current", "Scan/Current", "Acquisition/Current(uA)"
+            ]))
+
+        exposure_s = _read_float([
+            "ImageInfo/ExposureTime", "ImageInfo/Exposure", "Acquisition/ExposureTime",
+            "Scan/ExposureTime"
+        ])
+        if exposure_s is None:
+            exposure_s = _read_int([
+                "ImageInfo/ExposureTime", "ImageInfo/Exposure", "Acquisition/ExposureTime",
+                "Scan/ExposureTime"
+            ])
+
+        src_to_ra_mm = _read_float([
+            "Geometry/SourceToRADistance", "ImageInfo/SourceToRADistance",
+            "Geometry/SrcToAxisDistance", "Geometry/SourceToCenterDistance"
+        ])
+        det_to_ra_mm = _read_float([
+            "Geometry/DetectorToRADistance", "ImageInfo/DetectorToRADistance",
+            "Geometry/DetToAxisDistance", "Geometry/DetectorToCenterDistance"
+        ])
+
+
         ole.close()
 
         meta = {
@@ -380,9 +509,18 @@ class ImportTXMLogic(ScriptedLoadableModuleLogic):
             "image_height": int(height),
             "number_of_images": int(n_imgs),
             "data_type": int(dt_code),
-            "pixel_size": float(px_um) if px_um is not None else None,   # µm
+            "pixel_size": float(px_um) if px_um is not None else None,  # µm
+            "binning": int(binning) if binning is not None else None,
+            "bits_per_pixel": int(bits_per_pixel),
+            "optical_magnification": float(magnif) if magnif is not None else None,
+            "voltage_kv": float(voltage_kv) if voltage_kv is not None else None,
+            "current_uA": float(current_uA) if current_uA is not None else None,
+            "exposure_s": float(exposure_s) if exposure_s is not None else None,
+            "src_to_ra_mm": float(src_to_ra_mm) if src_to_ra_mm is not None else None,
+            "det_to_ra_mm": float(det_to_ra_mm) if det_to_ra_mm is not None else None,
             "source": "ole-only",
         }
+
         return vol, meta
 
     # ---------------------- spacing inference ---------------------- #
