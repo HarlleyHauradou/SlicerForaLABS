@@ -283,6 +283,15 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 logging.error(f"Thickness (medial) error: {e}")
                 thick = None
 
+        # Pore diameter (mm) por DT do vazio próximo à parede
+        pore_diam = None
+        try:
+            pore_diam = self._pore_diameter_stats_from_poly(poly, voxel_mm=float(thickness_voxel_mm))
+        except Exception as e:
+            logging.error(f"Pore diameter error: {e}")
+            pore_diam = None
+
+
         # Porosity (%)
         if pore_count and pore_count > 0:
             porosity_pct = (pore_density / float(pore_count)) * 100.0
@@ -297,7 +306,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             "pore_density_per_mm2": float(pore_density),
             "porosity_pct": float(porosity_pct), 
             "cleaning": clean_info,
-            "thickness_mm": thick
+            "thickness_mm": thick,
+            "pore_diameter_mm": pore_diam
         }
 
         self.last_metrics = metrics
@@ -341,6 +351,13 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         thick_sd_um    = self._fmt((thick.get('std_mm')   * 1000.0) if thick else None, p=3)
         thick_voxel_um = self._fmt((thick.get('voxel_mm') * 1000.0) if thick else None, p=3)
 
+        # ---- pore diameter ----
+        pd = m.get('pore_diameter_mm') or {}
+        pore_diam_mean_um = self._fmt((pd.get('mean_mm') * 1000.0) if pd else None, p=3)
+        pore_diam_sd_um   = self._fmt((pd.get('std_mm')  * 1000.0) if pd else None, p=3)
+        pore_diam_n       = int(pd.get('count') or 0)
+
+
         # ---- contexto para o template ----
         ctx = {
             "pore_count":            int(m.get('count_pores') or 0),
@@ -352,6 +369,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             "thick_mean_um":         thick_mean_um,
             "thick_sd_um":           thick_sd_um,
             "thick_voxel_um":        thick_voxel_um,
+            "pore_diam_mean_um":     pore_diam_mean_um,
+            "pore_diam_sd_um":       pore_diam_sd_um,
             "foot_left":             ("Morphometric measurements using ForaLABS"),
             "note":                  note,
         }
@@ -524,6 +543,145 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         if vals.size == 0:
             return {"mean_mm": 0.0, "std_mm": 0.0, "voxel_mm": float(voxel_mm)}
         return {"mean_mm": float(np.mean(vals)), "std_mm": float(np.std(vals)), "voxel_mm": float(voxel_mm)}
+    
+    
+    # ---------- Pore diameter (void DT + local maxima near wall) ----------
+    def _pore_diameter_stats_from_poly(self, poly, voxel_mm=0.003):
+        """
+        Estima diâmetros dos poros (mm) a partir de máximos locais do distance transform do 'void'
+        restritos a uma faixa ao redor da parede. Retorna dict {mean_mm, std_mm, count}.
+        """
+        # 1) Voxelização (sólido = 1)
+        mask, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(voxel_mm))
+        mask_u8 = sitk.Cast(mask > 0, sitk.sitkUInt8)
+        void_u8 = sitk.Cast(mask_u8 == 0, sitk.sitkUInt8)
+
+        # 2) Espessura média para definir a largura da faixa (band) ao redor da parede
+        try:
+            tstats = self._thickness_stats_medial_from_poly(poly, voxel_mm=float(voxel_mm))
+            mean_thick = float(tstats.get('mean_mm', 0.0))
+        except Exception:
+            mean_thick = 0.0
+        # banda ~ 0.75 * espessura média (mas nunca menor que ~2 vox)
+        band_mm = max(2.0 * float(voxel_mm), 0.75 * mean_thick) if mean_thick > 0 else 3.0 * float(voxel_mm)
+
+        # 3) Faixa ao redor da parede via distância assinada do sólido |dt_solid| <= band_mm
+        dt_solid = sitk.SignedMaurerDistanceMap(
+            mask_u8, insideIsPositive=True, squaredDistance=False, useImageSpacing=True, backgroundValue=0
+        )
+        band_mask = sitk.Cast(sitk.LessEqual(sitk.Abs(dt_solid), band_mm), sitk.sitkUInt8)
+
+        # 4) Porção "vazia" apenas dentro da faixa
+        pore_band = sitk.And(band_mask, void_u8)
+
+        # # 5) Distance transform do vazio (em mm)
+        # dt_void = sitk.SignedMaurerDistanceMap(
+        #     void_u8, insideIsPositive=True, squaredDistance=False, useImageSpacing=True, backgroundValue=0
+        # )
+
+        # # 6) Máximos locais 3×3×3 dentro da faixa (candidatos a centros de poros)
+        # dil = sitk.GrayscaleDilate(dt_void, [1, 1, 1])
+        # maxima = sitk.And(sitk.Equal(dt_void, dil), pore_band)
+
+        # # 7) Limite mínimo de raio para suprimir ruído (≥ ~1 voxel)
+        # min_r_mm = max(float(voxel_mm), 0.8 * float(voxel_mm))
+        # maxima = sitk.And(maxima, sitk.GreaterEqual(dt_void, min_r_mm))
+
+
+        # 5) Distance transform do vazio (em mm)
+        dt_void = sitk.SignedMaurerDistanceMap(
+            void_u8, insideIsPositive=True, squaredDistance=False, useImageSpacing=True, backgroundValue=0
+        )
+
+        # 5a) Suavização leve (em PIXELS) para quebrar platôs sem inflar raios
+        dt_s = sitk.SmoothingRecursiveGaussian(dt_void, sigma=0.6)  # ~0.6 px
+
+        # 6) "Máximos" com tolerância (DT >= dilatação - eps) dentro da FAIXA
+        dil = sitk.GrayscaleDilate(dt_s, [1, 1, 1])
+        eps = 0.10 * float(voxel_mm)  # tolerância menor que 0.20 p/ reduzir falsos picos
+        near_max = sitk.GreaterEqual(dt_s, sitk.Subtract(dil, eps))  # binário
+        maxima = sitk.And(sitk.Cast(near_max, sitk.sitkUInt8), pore_band)
+
+        # 6b) Juntar picos muito próximos (≤ ~2 vox) para evitar "vários por poro"
+        maxima = sitk.BinaryMorphologicalClosing(maxima, [2, 2, 2])
+
+        # 7) Raio mínimo mais estrito (remove piso + rugosidade)
+        min_r_mm = 1.35 * float(voxel_mm)
+        maxima = sitk.And(maxima, sitk.Cast(sitk.Greater(dt_s, min_r_mm), sitk.sitkUInt8))
+
+        # 8) Rotular candidatos
+        cc = sitk.ConnectedComponent(maxima, True)  # UInt32
+
+        # 9) Medir raio (em dt_void NÃO suavizado) + centroides p/ consolidar
+        stats = sitk.LabelStatisticsImageFilter(); stats.Execute(dt_void, cc)
+        shape = sitk.LabelShapeStatisticsImageFilter(); shape.Execute(cc)
+
+        # 9a) Lista (raio, centro_mm)
+        cands = []
+        for lab in shape.GetLabels():
+            if int(lab) == 0:
+                continue
+            r = float(stats.GetMaximum(lab))
+            if not np.isfinite(r) or r <= 0:
+                continue
+            cx, cy, cz = shape.GetCentroid(lab)  # coords físicas (mm)
+            cands.append((r, np.array([cx, cy, cz], dtype=float)))
+
+        if not cands:
+            return {"mean_mm": float('nan'), "std_mm": float('nan'), "count": 0}
+
+        # 10) NÃO-MAXIMUM SUPPRESSION (um pico por poro)
+        # Mantém o maior raio e descarta picos a distância <= max(2*voxel, 2.5*min(r_i,r_j))
+        cands.sort(key=lambda x: x[0], reverse=True)  # maior raio primeiro
+        kept = []
+        for r, c in cands:
+            keep = True
+            for rk, ck in kept:
+                d = float(np.linalg.norm(c - ck))
+                if d <= max(2.0 * float(voxel_mm), 2.5 * min(r, rk)):
+                    keep = False
+                    break
+            if keep:
+                kept.append((r, c))
+
+        radii = [r for r, _ in kept]
+        if len(radii) == 0:
+            return {"mean_mm": float('nan'), "std_mm": float('nan'), "count": 0}
+
+        diam = np.array(radii, dtype=float) * 2.0
+        return {
+            "mean_mm": float(np.mean(diam)),
+            "std_mm":  float(np.std(diam)),
+            "count":   int(len(radii)),
+        }
+
+
+        
+
+        # # 8) Agrupa máximos e pega o raio máximo por rótulo
+        # cc = sitk.ConnectedComponent(sitk.Cast(maxima, sitk.sitkUInt8), True)  # 26-conexões
+        # stats = sitk.LabelStatisticsImageFilter()
+        # stats.Execute(dt_void, cc)
+
+        # radii = []
+        # for lab in stats.GetLabels():
+        #     if int(lab) == 0:
+        #         continue
+        #     r = float(stats.GetMaximum(lab))
+        #     if np.isfinite(r) and r > 0:
+        #         radii.append(r)
+
+        # if len(radii) == 0:
+        #     return {"mean_mm": float('nan'), "std_mm": float('nan'), "count": 0}
+
+        # diam = np.array(radii, dtype=float) * 2.0  # diâmetro = 2×raio
+        # return {
+        #     "mean_mm": float(np.mean(diam)),
+        #     "std_mm": float(np.std(diam)),
+        #     "count": int(diam.size),
+        # }
+
+
 
     # ---------- Map on mesh / Export ----------
     def generate_thickness_map_on_mesh(self, segNode, wallSegmentId, voxel_mm=0.003, minDiamPct=10.0, removeUnref=True):
