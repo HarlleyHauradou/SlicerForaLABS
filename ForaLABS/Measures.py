@@ -675,7 +675,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         return modelNode
 
     # ---------- Cleaning by relative diameter ----------
-    def _remove_isolated_pieces_by_diameter(self, poly, minDiamMM=0.0, removeUnref=True, hard_limit_regions=3000):
+    def _remove_isolated_pieces_by_diameter(self, poly, minDiamMM=0.0, removeUnref=True, hard_limit_regions=500):
         """Remove disconnected components whose bbox diagonal is smaller than minDiamMM.
         If region count is too high (>hard_limit_regions), fallback: keep only largest component.
         Returns (clean_poly, info_dict)."""
