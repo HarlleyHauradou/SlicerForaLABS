@@ -51,7 +51,7 @@
 
 1. Clone or download this repository:
    ```bash
-   git clone https://github.com/<your-org>/<repo>.git
+   git clone https://github.com/HarlleyHauradou/SlicerForaLABS.git
    ```
 2. Add the repo as an additional module path in Slicer:
    - **Edit ▸ Application Settings ▸ Modules ▸ Additional module paths** → **Add** the cloned folder and **Restart** Slicer.
