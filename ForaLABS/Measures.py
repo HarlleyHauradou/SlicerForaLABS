@@ -127,7 +127,7 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         html = self.logic.render_metrics_html(metrics, elapsed=dt)
         self.outputBrowser.setHtml(html)
-        self.statusLabel.text = f"Metrics computed (≈ {dt:.2f} s)."
+        self.statusLabel.text = f"Time (≈ {dt:.2f} s)."
 
     def onExport(self):
         metrics = self.logic.last_metrics; assert metrics, "Compute metrics first."
@@ -329,9 +329,9 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 total = int(clean.get('regions_total', 0))
                 overflow = bool(clean.get('overflow_largest_only', False))
                 extra = " (fallback: largest component only)" if overflow else ""
-                note = (f"<div class='sub' style='margin-top:6px;'>"
-                        f"Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. "
-                        f"(≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>")
+                # note = (f"<div class='sub' style='margin-top:6px;'>"
+                #         f"Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. "
+                #         f"(≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>")
         except Exception:
             pass
 
@@ -352,7 +352,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             "thick_mean_um":         thick_mean_um,
             "thick_sd_um":           thick_sd_um,
             "thick_voxel_um":        thick_voxel_um,
-            "foot_left":             (f"Time ≈ {elapsed:.2f} s • " if elapsed is not None else ""),
+            "foot_left":             ("Morphometric measurements using ForaLABS"),
             "note":                  note,
         }
 
@@ -372,7 +372,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                     f"<p>Pore density: {ctx['pore_density_per_mm2']} mm⁻²</p>"
                     f"<p>Thickness mean: {ctx['thick_mean_um']} µm</p>"
                     f"<p>Thickness voxel: {ctx['thick_voxel_um']} µm</p>"
-                    f"<div class='sub'>{ctx['foot_left']}Mesh-only</div>"
+                    f"<div class='sub'>{ctx['foot_left']}</div>"
                     f"{ctx['note']}</body></html>")
 
 
@@ -708,53 +708,6 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         if removeUnref:
             clean = vtk.vtkCleanPolyData(); clean.SetInputData(out); clean.Update(); out = clean.GetOutput()
         return out, info
-
-    # # ---------- Outer area for V/A ----------
-    # def _outer_surface_area_mm2_from_poly(self, poly, voxel_mm=0.003):
-    #     """Shell area in contact with the EXTERIOR (mm²), via voxelization and face counting."""
-    #     mask, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(voxel_mm))
-    #     mask_u8 = sitk.Cast(mask>0, sitk.sitkUInt8)
-    #     outside = self._outside_from_mask(mask_u8)
-    #     arr_w = sitk.GetArrayFromImage(mask_u8)>0   # (z,y,x)
-    #     arr_o = sitk.GetArrayFromImage(outside)>0
-    #     sx, sy, sz = spacing  # (x,y,z) mm
-    #     # faces perpendicular to X (pairs along x)
-    #     c1 = np.count_nonzero(arr_w[:, :, :-1] & arr_o[:, :, 1:])
-    #     c2 = np.count_nonzero(arr_o[:, :, :-1] & arr_w[:, :, 1:])
-    #     area_x = (c1 + c2) * (sy * sz)
-    #     # faces perpendicular to Y
-    #     c1 = np.count_nonzero(arr_w[:, :-1, :] & arr_o[:, 1:, :])
-    #     c2 = np.count_nonzero(arr_o[:, :-1, :] & arr_w[:, 1:, :])
-    #     area_y = (c1 + c2) * (sx * sz)
-    #     # faces perpendicular to Z
-    #     c1 = np.count_nonzero(arr_w[:-1, :, :] & arr_o[1:, :, :])
-    #     c2 = np.count_nonzero(arr_o[:-1, :, :] & arr_w[1:, :, :])
-    #     area_z = (c1 + c2) * (sx * sy)
-    #     return float(area_x + area_y + area_z)
-
-    # def _outside_from_mask(self, mask_u8):
-    #     inv = sitk.BinaryNot(mask_u8)
-    #     cc = sitk.ConnectedComponent(inv)
-    #     stats = sitk.LabelShapeStatisticsImageFilter(); stats.Execute(cc)
-    #     size = mask_u8.GetSize()  # (x,y,z)
-    #     outside_label = None; outside_count = -1
-    #     for lbl in stats.GetLabels():
-    #         x, sx_, y, sy_, z, sz_ = stats.GetBoundingBox(lbl)
-    #         touches = (x==0 or y==0 or z==0 or (x+sx_==size[0]) or (y+sy_==size[1]) or (z+sz_==size[2]))
-    #         if touches:
-    #             n = stats.GetNumberOfPixels(lbl)
-    #             if n > outside_count:
-    #                 outside_label, outside_count = lbl, n
-    #     if outside_label is None:
-    #         # fallback: largest background component
-    #         lbls = list(stats.GetLabels())
-    #         if not lbls:
-    #             return inv
-    #         outside_label = max(lbls, key=lambda L: stats.GetNumberOfPixels(L))
-    #     outside = sitk.Equal(cc, int(outside_label))
-    #     outside = sitk.Cast(outside, sitk.sitkUInt8)
-    #     outside.CopyInformation(mask_u8)
-    #     return outside
 
 # =========================================================
 # Tests (placeholder)
