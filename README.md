@@ -133,7 +133,7 @@ Academic/industry collaborators are welcome — reach out via Issues.
 If you use ForaLABS in academic work, please cite this repository (and any forthcoming publications). Example:
 ```text
 Hauradou H., Hauradou T. (2025). ForaLABS – microCT tools for foraminifera (3D Slicer modules).
-GitHub repository: https://github.com/<your-org>/<repo>
+GitHub repository: https://github.com/HarlleyHauradou/SlicerForaLABS
 ```
 
 ---
