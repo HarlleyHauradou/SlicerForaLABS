@@ -230,6 +230,145 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
 
+# ------------------------------------------------------------
+# Porosidade interna via fechamento + flood exterior (helpers)
+# ------------------------------------------------------------
+
+def _um_to_mm(x_um): 
+    return float(x_um) * 1e-3
+
+def _choose_closing_radius_mm(voxel_mm, pores: dict = None, thick: dict = None):
+    """
+    Escolhe raio de fechamento morfológico (mm).
+    Regra: > diâmetro típico do poro / 2 (média+2*sd), com margem; fallback usa voxel_mm e espessura média.
+    """
+    pores = pores or {}
+    thick = thick or {}
+    try:
+        d_mean_um = float(pores.get("diam_mean_um", 0.0))
+        d_sd_um   = float(pores.get("diam_sd_um",   0.0))
+    except Exception:
+        d_mean_um = d_sd_um = 0.0
+    target_d_mm = _um_to_mm(max(0.0, d_mean_um + 2.0*d_sd_um))
+    r_from_pores = 0.525 * target_d_mm if target_d_mm > 0 else 0.0
+
+    mean_thick_mm = 0.0
+    try:
+        mean_thick_mm = float(thick.get("mean_mm", 0.0))
+    except Exception:
+        pass
+
+    r_fallback = max(2.0*float(voxel_mm), 0.25*mean_thick_mm if mean_thick_mm > 0 else 0.0)
+    closing_mm = max(r_from_pores, r_fallback)
+    return max(closing_mm, 1.5*float(voxel_mm))  # evita zero
+
+def _vtk_image_from_sitk(img: sitk.Image):
+    """
+    Converte SimpleITK Image (UInt8/0-1) em vtkImageData preservando spacing/origin.
+    """
+    arr = sitk.GetArrayFromImage(img)  # z,y,x
+    data_bytes = arr.tobytes(order='C')
+    sx, sy, sz = img.GetSpacing()      # mm
+    ox, oy, oz = img.GetOrigin()
+    nx, ny, nz = img.GetSize()         # x,y,z
+
+    importer = vtk.vtkImageImport()
+    importer.CopyImportVoidPointer(data_bytes, len(data_bytes))
+    importer.SetDataScalarTypeToUnsignedChar()
+    importer.SetNumberOfScalarComponents(1)
+    importer.SetWholeExtent(0, nx-1, 0, ny-1, 0, nz-1)
+    importer.SetDataExtentToWholeExtent()
+    importer.SetDataSpacing(sx, sy, sz)
+    importer.SetDataOrigin(ox, oy, oz)
+    importer.Update()
+    return importer.GetOutput()
+
+def _surface_area_from_binary_mm2(binary_u8: sitk.Image, iso_value=0.5):
+    """
+    Calcula área (mm^2) da superfície do rótulo=1 em 'binary_u8' via Marching Cubes.
+    """
+    vtk_img = _vtk_image_from_sitk(binary_u8)
+    mc = vtk.vtkMarchingCubes()
+    mc.SetInputData(vtk_img)
+    mc.SetValue(0, float(iso_value))
+    mc.ComputeNormalsOff()
+    mc.Update()
+
+    tri = vtk.vtkTriangleFilter()
+    tri.SetInputConnection(mc.GetOutputPort())
+    tri.Update()
+
+    mp = vtk.vtkMassProperties()
+    mp.SetInputConnection(tri.GetOutputPort())
+    mp.Update()
+    return float(mp.GetSurfaceArea())
+
+def _S_in_via_closing_mm2(solid_u8: sitk.Image, voxel_mm: float, pores: dict = None, thick: dict = None,
+                          force_closing_mm: float = None):
+    """
+    Retorna (S_in_mm2, meta) a partir da máscara binária da calcita (UInt8, 0/1).
+    Se force_closing_mm <= 0, NÃO faz fechamento (superfície 'crua').
+    Caso contrário, usa o raio informado; se None, escolhe automaticamente.
+    """
+    pores = pores or {}
+    thick = thick or {}
+
+    # --- (A) escolher closing_mm ---
+    if force_closing_mm is None:
+        closing_mm = _choose_closing_radius_mm(voxel_mm, pores=pores, thick=thick)
+    else:
+        closing_mm = float(force_closing_mm)
+
+    # --- (B) aplicar (ou não) o fechamento ---
+    if closing_mm is not None and closing_mm > 0:
+        radius_vox = max(1, int(round(float(closing_mm) / float(voxel_mm))))
+        closed_u8  = sitk.BinaryMorphologicalClosing(solid_u8, [radius_vox]*3)
+    else:
+        radius_vox = 0
+        closed_u8  = sitk.Cast(solid_u8, sitk.sitkUInt8)
+
+    # --- (C) flood do exterior no complemento ---
+    inv_u8 = sitk.BinaryNot(closed_u8)   # 1 = vazio
+    nx, ny, nz = list(closed_u8.GetSize())
+    seeds = []
+    for ix in (0, nx-1):
+        for iy in (0, ny-1):
+            for iz in (0, nz-1):
+                if int(inv_u8[ix, iy, iz]) == 1:
+                    seeds.append((ix, iy, iz))
+    if not seeds:
+        for ix in (0, nx-1):
+            for iy in range(0, ny, max(1, ny//8)):
+                for iz in range(0, nz, max(1, nz//8)):
+                    if int(inv_u8[ix, iy, iz]) == 1:
+                        seeds.append((ix, iy, iz))
+        for iy in (0, ny-1):
+            for ix in range(0, nx, max(1, nx//8)):
+                for iz in range(0, nz, max(1, nz//8)):
+                    if int(inv_u8[ix, iy, iz]) == 1:
+                        seeds.append((ix, iy, iz))
+
+    exterior = sitk.ConnectedThreshold(inv_u8, seedList=seeds, lower=1, upper=1, replaceValue=1)
+    exterior = sitk.Cast(exterior, sitk.sitkUInt8)
+
+    # --- (D) lúmen = vazio interno (não exterior) ---
+    lumen_u8 = sitk.And(inv_u8, sitk.BinaryNot(exterior))
+    lumen_u8 = sitk.Cast(lumen_u8, sitk.sitkUInt8)
+
+    # --- (E) área da superfície do lúmen ---
+    try:
+        S_in_mm2 = _surface_area_from_binary_mm2(lumen_u8, iso_value=0.5)
+    except Exception as e:
+        logging.error(f"Falha ao calcular S_in (Marching Cubes): {e}")
+        S_in_mm2 = float('nan')
+
+    meta = {
+        "closing_mm": float(closing_mm if closing_mm is not None else 0.0),
+        "radius_vox": int(radius_vox),
+        "has_lumen_voxels": bool(sitk.GetArrayFromImage(lumen_u8).any())
+    }
+    return float(S_in_mm2), meta
+
 # =========================================================
 # Logic (mesh-only)
 # =========================================================
@@ -284,10 +423,52 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 thick = None
 
         # Porosity (%)
-        if pore_count and pore_count > 0:
-            porosity_pct = (pore_density / float(pore_count)) * 100.0
-        else:
-            porosity_pct = float('nan')
+        # if pore_count and pore_count > 0:
+        #     porosity_pct = (pore_density / float(pore_count)) * 100.0
+        # else:
+        #     porosity_pct = float('nan')
+
+        # === S_in via fechamento + flood exterior (área interna "sem paredes de túnel") ===
+        # 1) voxeliza malha de calcita
+        mask_u8, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(thickness_voxel_mm))
+        solid_u8 = sitk.Cast(mask_u8 > 0, sitk.sitkUInt8)
+
+        # 2a) S_in sem fechar poros (superfície "crua")
+        S_in_raw_mm2, sin_raw_meta = _S_in_via_closing_mm2(
+            solid_u8,
+            voxel_mm=float(thickness_voxel_mm),
+            pores={},              # NÃO passe pore_count aqui
+            thick=thick,
+            force_closing_mm=0.0   # força: sem closing
+        )
+
+        # 2b) S_in com poros selados (superfície alvo para porosidade)
+        S_in_seal_mm2, sin_seal_meta = _S_in_via_closing_mm2(
+            solid_u8,
+            voxel_mm=float(thickness_voxel_mm),
+            pores={},              # se tiver stats de poro (mean/sd), passe como dict aqui
+            thick=thick,
+            force_closing_mm=None  # auto (ou fixe um valor em mm se quiser)
+        )
+
+        # 3) Área total das aberturas (mm²) ≈ delta de área interna
+        A_poros_mm2 = max(0.0, S_in_seal_mm2 - S_in_raw_mm2)
+
+        # 4) Número de poros (você já tem)
+        pore_count_val = int(pore_count) if pore_count is not None else 0
+
+        # 5) Diâmetro médio equivalente (µm)
+        pore_diam_mean_um = float('nan')
+        if pore_count_val > 0 and A_poros_mm2 > 0:
+            d_mean_mm = np.sqrt((4.0 * A_poros_mm2) / (np.pi * pore_count_val))
+            pore_diam_mean_um = d_mean_mm * 1e3  # mm -> µm
+
+        # 6) Porosidade de parede (interna, %) usando a superfície SELADA
+        phi_in_pct = float('nan')
+        if S_in_seal_mm2 and S_in_seal_mm2 > 0:
+            phi_in_pct = 100.0 * (A_poros_mm2 / S_in_seal_mm2)
+
+
 
         metrics = {
             "count_pores": int(pore_count),
@@ -295,7 +476,10 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             "volume_mm3": float(V_mesh),
             "S_over_V": float(S_over_V),
             "pore_density_per_mm2": float(pore_density),
-            "porosity_pct": float(porosity_pct), 
+            "porosity_pct": float(phi_in_pct), 
+            "pore_diam_mean_um": float(pore_diam_mean_um),
+            "s_in_seal_mm2": float(S_in_seal_mm2),
+            "s_in_raw_mm2": float(S_in_raw_mm2),
             "cleaning": clean_info,
             "thickness_mm": thick
         }
@@ -344,6 +528,9 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         # ---- contexto para o template ----
         ctx = {
             "pore_count":            int(m.get('count_pores') or 0),
+            "pore_diam_mean_um":     self._fmt(m.get('pore_diam_mean_um'), p=3),
+            "s_in_seal_mm2":        self._fmt(m.get('s_in_seal_mm2'), p=6),
+            "s_in_raw_mm2":         self._fmt(m.get('s_in_raw_mm2'), p=6),
             "surface_area_mm2":      self._fmt(m.get('surface_area_mm2'), p=6),
             "volume_mm3":            self._fmt(m.get('volume_mm3'), p=6),
             "s_over_v":              self._fmt(m.get('S_over_V'), p=6),
@@ -366,6 +553,9 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             # Fallback: algo mínimo se o template não estiver disponível
             return (f"<html><body><h3>Measures</h3>"
                     f"<p>Pores: {ctx['pore_count']}</p>"
+                    f"<p>Mean pore diameter: {ctx['pore_diam_mean_um']} µm</p>"
+                    f"<p>S_in (sealed): {ctx['s_in_seal_mm2']} mm²</p>"
+                    f"<p>S_in (raw): {ctx['s_in_raw_mm2']} mm²</p>"
                     f"<p>Area: {ctx['surface_area_mm2']} mm²</p>"
                     f"<p>Volume: {ctx['volume_mm3']} mm³</p>"
                     f"<p>S/V: {ctx['s_over_v']} mm⁻¹</p>"
@@ -382,7 +572,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         doc.setHtml(html)
 
         printer = qt.QPrinter()
-        printer.setOutputFormat(qt.QPrinter.PdfFormat)
+        printer.setOutputFor    (qt.QPrinter.PdfFormat)
         printer.setOutputFileName(out_path)
         # Página A4 com margens suaves (mm)
         try:
