@@ -273,14 +273,25 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 # generate map and get stats
                 sitk_img, info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(thickness_voxel_mm))
                 self.last_thick_img = sitk_img; self.last_thick_info = info
-                arr = sitk.GetArrayFromImage(sitk_img)
-                vals = arr[np.isfinite(arr) & (arr>0)]
-                if vals.size == 0:
-                    thick = {"mean_mm": 0.0, "std_mm": 0.0, "voxel_mm": float(thickness_voxel_mm)}
+                # stats vêm do cálculo (voxels centrais/medial)
+                st = (info or {}).get("stats", None)
+                if st and st.get("mean_mm", 0.0) > 0:
+                    thick = {
+                        "mean_mm": float(st.get("mean_mm", 0.0)),
+                        "std_mm":  float(st.get("std_mm", 0.0)),
+                        "min_mm":  float(st.get("min_mm", 0.0)),
+                        "max_mm":  float(st.get("max_mm", 0.0)),
+                        "median_mm": float(st.get("median_mm", 0.0)),
+                        "voxel_mm": float(thickness_voxel_mm),
+                        "central_voxels": int(info.get("central_voxels", 0)),
+                    }
                 else:
-                    thick = {"mean_mm": float(np.mean(vals)), "std_mm": float(np.std(vals)), "voxel_mm": float(thickness_voxel_mm)}
+                    logging.warning(f"Thickness stats: {st}, info: {info}")
+                    thick = None
             except Exception as e:
-                logging.error(f"Thickness (medial) error: {e}")
+                logging.error(f"Thickness error: {e}")
+                import traceback
+                traceback.print_exc()
                 thick = None
 
         # Porosity (%)
@@ -471,7 +482,11 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         return extr.GetOutput().GetNumberOfLines()
 
     # ---------- Voxelization + map (Medial 2×distance) ----------
-    def _voxelize_poly(self, poly, voxel_mm=0.003, margin_vox=1):
+    def _voxelize_poly_solid(self, poly, voxel_mm=0.003, margin_vox=2):
+        """
+        Voxeliza a malha como volume sólido (preenche o interior).
+        Para shells, usa dilatação para garantir que há voxels dentro.
+        """
         bounds = poly.GetBounds()
         if poly.GetNumberOfPoints() == 0:
             raise RuntimeError("Empty PolyData for voxelization.")
@@ -496,25 +511,177 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         return sitk_img, tuple(sp), tuple(origin), (dims[2], dims[1], dims[0])
 
     def _thickness_map_medial_from_poly(self, poly, voxel_mm=0.003):
-        mask, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(voxel_mm))
-        mask_u8 = sitk.Cast(mask>0, sitk.sitkUInt8)
-        # Internal DT (mm)
-        dt = sitk.SignedMaurerDistanceMap(mask_u8, insideIsPositive=True, squaredDistance=False, useImageSpacing=True, backgroundValue=0)
-        # approximate medial as local maxima of DT (26-neighborhood)
-        gd = sitk.GrayscaleDilate(dt, [1,1,1])
-        medial = sitk.Equal(dt, gd)
-        # Distance to medial (mm)
-        d2m = sitk.SignedMaurerDistanceMap(sitk.Cast(medial, sitk.sitkUInt8), insideIsPositive=False, squaredDistance=False, useImageSpacing=True, backgroundValue=0)
-        arr = sitk.GetArrayFromImage(d2m)
-        thick_arr = 2.0 * arr
-        # zero outside the object
-        mask_arr = sitk.GetArrayFromImage(mask_u8) > 0
-        thick_arr = np.where(mask_arr, thick_arr, 0.0).astype(np.float32)
-        # create SITK image for thickness
-        thick_img = sitk.GetImageFromArray(thick_arr)
-        thick_img.SetSpacing(spacing)
-        thick_img.SetOrigin(origin)
-        info = {"spacing": spacing, "origin": origin, "shape": thick_arr.shape}
+        """
+        Calcula espessura média da parede usando ray casting nos vértices da malha.
+        
+        Para estruturas shell-like (cascas/paredes), a espessura é estimada 
+        lançando raios a partir de cada vértice na direção da normal e 
+        medindo a distância até o outro lado da parede.
+        
+        Retorna: (thick_img, info_dict)
+        - thick_img: imagem voxelizada com valores de espessura (para visualização)
+        - info_dict: contém estatísticas calculadas diretamente na malha
+        """
+        # ---------- Método baseado em Ray Casting na malha ----------
+        # Calcula espessura diretamente nos vértices da malha
+        
+        # Garante que temos normais
+        normals_filter = vtk.vtkPolyDataNormals()
+        normals_filter.SetInputData(poly)
+        normals_filter.ComputePointNormalsOn()
+        normals_filter.ComputeCellNormalsOff()
+        normals_filter.SplittingOff()
+        normals_filter.ConsistencyOn()
+        normals_filter.AutoOrientNormalsOn()
+        normals_filter.Update()
+        poly_with_normals = normals_filter.GetOutput()
+        
+        pts = poly_with_normals.GetPoints()
+        normals = poly_with_normals.GetPointData().GetNormals()
+        npts = pts.GetNumberOfPoints()
+        
+        if npts == 0 or normals is None:
+            # Fallback: retorna zeros
+            info = {
+                "spacing": (voxel_mm, voxel_mm, voxel_mm),
+                "origin": (0, 0, 0),
+                "shape": (1, 1, 1),
+                "stats": {"mean_mm": 0.0, "std_mm": 0.0},
+                "note": "Malha sem pontos ou normais."
+            }
+            return sitk.Image(1, 1, 1, sitk.sitkFloat32), info
+        
+        # Cria locator para ray casting
+        cell_locator = vtk.vtkCellLocator()
+        cell_locator.SetDataSet(poly_with_normals)
+        cell_locator.BuildLocator()
+        
+        # Estruturas para ray casting
+        t_val = vtk.mutable(0.0)
+        pcoords = [0.0, 0.0, 0.0]
+        sub_id = vtk.mutable(0)
+        cell_id = vtk.mutable(0)
+        intersection = [0.0, 0.0, 0.0]
+        
+        # Calcula bounds para determinar alcance máximo do raio
+        bounds = poly.GetBounds()
+        diag = ((bounds[1]-bounds[0])**2 + (bounds[3]-bounds[2])**2 + (bounds[5]-bounds[4])**2)**0.5
+        max_ray_length = diag * 0.5  # metade da diagonal como máximo
+        
+        # Amostragem: usa todos os pontos ou subsample se muitos
+        max_samples = 50000
+        if npts > max_samples:
+            indices = np.random.choice(npts, max_samples, replace=False)
+        else:
+            indices = np.arange(npts)
+        
+        thickness_values = []
+        
+        for idx in indices:
+            pt = pts.GetPoint(idx)
+            n = normals.GetTuple(idx)
+            
+            # Normaliza a normal
+            norm_len = (n[0]**2 + n[1]**2 + n[2]**2)**0.5
+            if norm_len < 1e-10:
+                continue
+            n = (n[0]/norm_len, n[1]/norm_len, n[2]/norm_len)
+            
+            # Lança raio na direção oposta à normal (para dentro da parede)
+            # Offset pequeno para evitar auto-interseção
+            offset = voxel_mm * 0.1
+            start = (pt[0] - n[0]*offset, pt[1] - n[1]*offset, pt[2] - n[2]*offset)
+            end = (pt[0] - n[0]*max_ray_length, pt[1] - n[1]*max_ray_length, pt[2] - n[2]*max_ray_length)
+            
+            hit = cell_locator.IntersectWithLine(start, end, 1e-9, t_val, intersection, pcoords, sub_id, cell_id)
+            
+            if hit:
+                # Distância do ponto original até a interseção
+                dist = ((intersection[0]-pt[0])**2 + (intersection[1]-pt[1])**2 + (intersection[2]-pt[2])**2)**0.5
+                if dist > voxel_mm * 0.5 and dist < max_ray_length:  # Filtra ruído
+                    thickness_values.append(dist)
+        
+        thickness_arr = np.array(thickness_values)
+        
+        if thickness_arr.size == 0:
+            # Fallback: tenta na direção positiva da normal
+            for idx in indices:
+                pt = pts.GetPoint(idx)
+                n = normals.GetTuple(idx)
+                
+                norm_len = (n[0]**2 + n[1]**2 + n[2]**2)**0.5
+                if norm_len < 1e-10:
+                    continue
+                n = (n[0]/norm_len, n[1]/norm_len, n[2]/norm_len)
+                
+                offset = voxel_mm * 0.1
+                start = (pt[0] + n[0]*offset, pt[1] + n[1]*offset, pt[2] + n[2]*offset)
+                end = (pt[0] + n[0]*max_ray_length, pt[1] + n[1]*max_ray_length, pt[2] + n[2]*max_ray_length)
+                
+                hit = cell_locator.IntersectWithLine(start, end, 1e-9, t_val, intersection, pcoords, sub_id, cell_id)
+                
+                if hit:
+                    dist = ((intersection[0]-pt[0])**2 + (intersection[1]-pt[1])**2 + (intersection[2]-pt[2])**2)**0.5
+                    if dist > voxel_mm * 0.5 and dist < max_ray_length:
+                        thickness_values.append(dist)
+            
+            thickness_arr = np.array(thickness_values)
+        
+        if thickness_arr.size == 0:
+            info = {
+                "spacing": (voxel_mm, voxel_mm, voxel_mm),
+                "origin": (0, 0, 0),
+                "shape": (1, 1, 1),
+                "stats": {"mean_mm": 0.0, "std_mm": 0.0},
+                "note": "Nenhuma interseção válida encontrada. A malha pode não ser uma shell fechada."
+            }
+            return sitk.Image(1, 1, 1, sitk.sitkFloat32), info
+        
+        # Remove outliers (valores muito altos ou muito baixos)
+        # Usa IQR para filtrar
+        q1, q3 = np.percentile(thickness_arr, [25, 75])
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        filtered = thickness_arr[(thickness_arr >= max(lower_bound, voxel_mm)) & (thickness_arr <= upper_bound)]
+        
+        if filtered.size < 10:
+            filtered = thickness_arr  # Usa todos se filtro removeu demais
+        
+        # Estatísticas
+        stats = {
+            "mean_mm": float(np.mean(filtered)),
+            "std_mm": float(np.std(filtered)),
+            "min_mm": float(np.min(filtered)),
+            "max_mm": float(np.max(filtered)),
+            "median_mm": float(np.median(filtered)),
+        }
+        
+        # Cria imagem de espessura para visualização (opcional)
+        # Voxeliza e preenche com valor médio
+        try:
+            mask, spacing, origin, shape = self._voxelize_poly_solid(poly, voxel_mm=float(voxel_mm))
+            mask_arr = sitk.GetArrayFromImage(mask)
+            thick_vol = np.zeros_like(mask_arr, dtype=np.float32)
+            thick_vol[mask_arr > 0] = stats["mean_mm"]
+            thick_img = sitk.GetImageFromArray(thick_vol)
+            thick_img.SetSpacing(spacing)
+            thick_img.SetOrigin(origin)
+        except Exception:
+            thick_img = sitk.Image(1, 1, 1, sitk.sitkFloat32)
+            spacing = (voxel_mm, voxel_mm, voxel_mm)
+            origin = (0, 0, 0)
+            shape = (1, 1, 1)
+        
+        info = {
+            "spacing": spacing,
+            "origin": origin,
+            "shape": shape,
+            "stats": stats,
+            "samples": int(len(indices)),
+            "valid_measurements": int(filtered.size),
+            "method": "ray_casting",
+        }
         return thick_img, info
 
     def _thickness_stats_medial_from_poly(self, poly, voxel_mm=0.003):
