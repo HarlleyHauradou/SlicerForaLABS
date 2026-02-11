@@ -303,7 +303,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             # Start with 2 or 3; increase if pores are larger than the voxel resolution.
             porosity_pct, porosity_info = self._porosity_vol_pct_from_poly(
                 poly,
-                voxel_mm=float(thickness_voxel_mm),
+                voxel_mm=max(0.02, float(thickness_voxel_mm) * 8.0),
                 closing_radius_vox=2
             )
         except Exception as e:
@@ -372,7 +372,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             "volume_mm3":            self._fmt(m.get('volume_mm3'), p=6),
             "s_over_v":              self._fmt(m.get('S_over_V'), p=6),
             "pore_density_per_mm2":  self._fmt(m.get('pore_density_per_mm2'), p=6),
-            "porosity_pct": self._fmt(m.get('porosity_pct'), p=2),
+            "porosity_pct":          self._fmt(m.get('porosity_pct'), p=2),
+            "porosity_info":         m.get('porosity_info') or {},
             "thick_mean_um":         thick_mean_um,
             "thick_sd_um":           thick_sd_um,
             "thick_voxel_um":        thick_voxel_um,
@@ -508,12 +509,20 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         dims = [int(np.ceil(dx/sp[0]))+2*margin_vox,
                 int(np.ceil(dy/sp[1]))+2*margin_vox,
                 int(np.ceil(dz/sp[2]))+2*margin_vox]
+        total_vox = int(dims[0]) * int(dims[1]) * int(dims[2])
+        MAX_VOX = 30_000_000  # ~30M voxels (seguro p/ uint8; acima disso é risco real)
+
+        if total_vox > MAX_VOX:
+            raise RuntimeError(
+                f"Voxelization too large: dims={dims} => {total_vox:,} voxels. "
+                f"Increase voxel_mm (currently {voxel_mm})."
+            )
         origin = [bounds[0]-margin_vox*sp[0], bounds[2]-margin_vox*sp[1], bounds[4]-margin_vox*sp[2]]
         img = vtk.vtkImageData(); img.SetSpacing(sp); img.SetOrigin(origin); img.SetDimensions(dims); img.AllocateScalars(vtk.VTK_UNSIGNED_CHAR,1)
-        # fill with 1
-        arr = np.ones((dims[2], dims[1], dims[0]), dtype=np.uint8)
-        vtkArr = ns.numpy_to_vtk(arr.ravel(order='C'), deep=1, array_type=vtk.VTK_UNSIGNED_CHAR)
-        img.GetPointData().SetScalars(vtkArr)
+        # fill with 1 (NO big numpy allocation)
+        scalars = img.GetPointData().GetScalars()
+        np_s = ns.vtk_to_numpy(scalars)  # view of vtk memory
+        np_s[:] = 1
         # mesh stencil
         p2s = vtk.vtkPolyDataToImageStencil(); p2s.SetInputData(poly); p2s.SetOutputSpacing(sp); p2s.SetOutputOrigin(origin); p2s.SetOutputWholeExtent(img.GetExtent()); p2s.Update()
         st = vtk.vtkImageStencil(); st.SetInputData(img); st.SetStencilConnection(p2s.GetOutputPort()); st.ReverseStencilOff(); st.SetBackgroundValue(0); st.Update()
@@ -717,7 +726,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         Porosity(%) = 100 * V_pores / V_envelope
         """
         # voxelize solid
-        mask, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(voxel_mm), margin_vox=3)
+        mask, spacing, origin, shape = self._voxelize_poly_solid(poly, voxel_mm=float(voxel_mm), margin_vox=3)
         mask_u8 = sitk.Cast(mask > 0, sitk.sitkUInt8)
 
         r = int(max(1, closing_radius_vox))
