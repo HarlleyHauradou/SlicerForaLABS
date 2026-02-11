@@ -295,10 +295,22 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 thick = None
 
         # Porosity (%)
-        if pore_count and pore_count > 0:
-            porosity_pct = (pore_density / float(pore_count)) * 100.0
-        else:
+            # Porosity (VOL %) via voxel closing (robust % metric)
+        porosity_pct = float('nan')
+        porosity_info = None
+        try:
+            # NOTE: closing_radius_vox controls what is considered a "pore".
+            # Start with 2 or 3; increase if pores are larger than the voxel resolution.
+            porosity_pct, porosity_info = self._porosity_vol_pct_from_poly(
+                poly,
+                voxel_mm=float(thickness_voxel_mm),
+                closing_radius_vox=2
+            )
+        except Exception as e:
+            logging.error(f"Porosity (voxel closing) error: {e}")
             porosity_pct = float('nan')
+            porosity_info = None
+
 
         metrics = {
             "count_pores": int(pore_count),
@@ -307,6 +319,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             "S_over_V": float(S_over_V),
             "pore_density_per_mm2": float(pore_density),
             "porosity_pct": float(porosity_pct), 
+            "porosity_info": porosity_info,
             "cleaning": clean_info,
             "thickness_mm": thick
         }
@@ -691,6 +704,54 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         if vals.size == 0:
             return {"mean_mm": 0.0, "std_mm": 0.0, "voxel_mm": float(voxel_mm)}
         return {"mean_mm": float(np.mean(vals)), "std_mm": float(np.std(vals)), "voxel_mm": float(voxel_mm)}
+    
+        # ---------- Porosity (VOL %) via voxelization + morphological closing ----------
+    def _porosity_vol_pct_from_poly(self, poly, voxel_mm=0.003, closing_radius_vox=2):
+        """
+        Estimates volumetric porosity (%) by voxelizing the mesh (solid mask) and
+        applying a binary morphological closing to 'seal' small through-pores.
+        
+        V_material  = volume of the voxelized solid
+        V_envelope  = volume after closing (approx. solid if pores were filled)
+        V_pores     = V_envelope - V_material
+        Porosity(%) = 100 * V_pores / V_envelope
+        """
+        # voxelize solid
+        mask, spacing, origin, shape = self._voxelize_poly(poly, voxel_mm=float(voxel_mm), margin_vox=3)
+        mask_u8 = sitk.Cast(mask > 0, sitk.sitkUInt8)
+
+        r = int(max(1, closing_radius_vox))
+
+        # close small channels (pores)
+        closed = sitk.BinaryMorphologicalClosing(
+            mask_u8,
+            [r, r, r],
+            sitk.sitkBall
+        )
+
+        # robust physical volumes (mm³) without converting to numpy
+        ls = sitk.LabelShapeStatisticsImageFilter()
+
+        ls.Execute(mask_u8)
+        V_material = float(ls.GetPhysicalSize(1)) if ls.HasLabel(1) else 0.0
+
+        ls.Execute(closed)
+        V_envelope = float(ls.GetPhysicalSize(1)) if ls.HasLabel(1) else 0.0
+
+        V_pores = max(0.0, V_envelope - V_material)
+        porosity_pct = (100.0 * V_pores / V_envelope) if V_envelope > 0 else float('nan')
+
+        info = {
+            "method": "voxel_closing",
+            "voxel_mm": float(voxel_mm),
+            "closing_radius_vox": int(r),
+            "closing_radius_mm": float(r) * float(voxel_mm),
+            "V_material_mm3": float(V_material),
+            "V_envelope_mm3": float(V_envelope),
+            "V_pores_mm3": float(V_pores),
+        }
+        return float(porosity_pct), info
+
 
     # ---------- Map on mesh / Export ----------
     def generate_thickness_map_on_mesh(self, segNode, wallSegmentId, voxel_mm=0.003, minDiamPct=10.0, removeUnref=True):
