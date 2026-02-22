@@ -136,16 +136,6 @@
         </property>
        </widget>
       </item>
-      <item row="0" column="1">
-       <widget class="QCheckBox" name="chkPorosity">
-        <property name="text">
-         <string>Porosity (%)</string>
-        </property>
-        <property name="checked">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
       <item row="0" column="2">
        <widget class="QCheckBox" name="chkArea">
         <property name="text">
@@ -186,13 +176,26 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="0">
+      <item row="0" column="1">
        <widget class="QCheckBox" name="chkThickness">
         <property name="text">
          <string>Thickness</string>
         </property>
         <property name="checked">
          <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QCheckBox" name="chkPorosity">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Porosity (%) (available soon)</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
         </property>
        </widget>
       </item>

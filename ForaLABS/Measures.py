@@ -170,7 +170,8 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Read the measure-selection checkboxes and return a dict."""
         return {
             "pores": self.chkPores.isChecked(),
-            "porosity": self.chkPorosity.isChecked(),
+            # TODO: Porosity is not working. Do not read it.
+            # "porosity": self.chkPorosity.isChecked(),
             "area": self.chkArea.isChecked(),
             "volume": self.chkVolume.isChecked(),
             "sv": self.chkSV.isChecked(),
@@ -201,7 +202,8 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         metrics = self.logic.compute_metrics(
             segNode, wallSid,
             minDiamPct=minPct, removeUnref=rmUnref, thickness_voxel_mm=thickVoxel,
-            progressCallback=lambda v, m=None: self._updateProgress(v, m)
+            progressCallback=lambda v, m=None: self._updateProgress(v, m),
+            include=include
         )
         dt = time.perf_counter() - t0
 
@@ -332,7 +334,15 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
 
     def compute_metrics(self, segNode, wallSegmentId, minDiamPct=10.0, removeUnref=True,
                        thickness_enabled=True, thickness_voxel_mm=0.003,
-                       progressCallback=None):
+                       progressCallback=None, include=None):
+        if include is None:
+            include = {k: True for k in ('pores', 'area', 'volume', 'sv', 'pore_density', 'thickness')}
+
+        need_pores = include.get('pores', True) or include.get('pore_density', True)
+        need_area = include.get('area', True) or include.get('sv', True) or include.get('pore_density', True)
+        need_volume = include.get('volume', True) or include.get('sv', True)
+        need_thickness = include.get('thickness', True) and thickness_enabled
+
         def _progress(val, msg=None):
             if progressCallback:
                 progressCallback(val, msg)
@@ -351,21 +361,31 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         self.last_clean_poly = poly
 
         # Area and volume
-        _progress(30, "Computing area & volume…")
-        A_mesh, V_mesh = self._surface_area_and_volume(poly)
+        A_mesh, V_mesh = None, None
+        if need_area or need_volume:
+            _progress(30, "Computing area & volume…")
+            A_mesh, V_mesh = self._surface_area_and_volume(poly)
+            if not need_area: A_mesh = None
+            if not need_volume: V_mesh = None
        
         # Pore count via genus
-        _progress(45, "Counting pores…")
-        pore_count = self._genus_based_pore_count(poly)
+        pore_count = None
+        if need_pores:
+            _progress(45, "Counting pores…")
+            pore_count = self._genus_based_pore_count(poly)
 
         # Derived
-        S_over_V = (A_mesh / V_mesh) if V_mesh > 0 else float('nan')
-        pore_density = (pore_count / A_mesh) if A_mesh > 0 else float('nan')  # #/mm²
-        
+        S_over_V = float('nan')
+        if include.get('sv', True) and A_mesh is not None and V_mesh and V_mesh > 0:
+            S_over_V = A_mesh / V_mesh
+            
+        pore_density = float('nan')
+        if include.get('pore_density', True) and pore_count is not None and A_mesh and A_mesh > 0:
+            pore_density = pore_count / A_mesh  # #/mm²
 
         # Thickness (medial)
         thick = None
-        if thickness_enabled:
+        if need_thickness:
             _progress(60, "Computing thickness…")
             try:
                 # generate map and get stats
@@ -392,20 +412,19 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 traceback.print_exc()
                 thick = None
 
-        # Porosity (%)
-        if pore_count and pore_count > 0:
-            porosity_pct = (pore_density / float(pore_count)) * 100.0
-        else:
-            porosity_pct = float('nan')
+        # Porosity (%) - TODO: Fix porosity calculation
+        # porosity_pct = float('nan')
+        # if include.get('porosity', True) and pore_count and pore_count > 0 and pore_density is not None:
+        #     porosity_pct = (pore_density / float(pore_count)) * 100.0
 
         _progress(90, "Finalizing…")
         metrics = {
-            "count_pores": int(pore_count),
-            "surface_area_mm2": float(A_mesh),
-            "volume_mm3": float(V_mesh),
+            "count_pores": pore_count,
+            "surface_area_mm2": A_mesh if A_mesh is not None else float('nan'),
+            "volume_mm3": V_mesh if V_mesh is not None else float('nan'),
             "S_over_V": float(S_over_V),
             "pore_density_per_mm2": float(pore_density),
-            "porosity_pct": float(porosity_pct), 
+            # "porosity_pct": float(porosity_pct), 
             "cleaning": clean_info,
             "thickness_mm": thick
         }
@@ -428,9 +447,9 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         return f"{float(x):.{p}f}"
 
     def render_metrics_html(self, m: dict, elapsed: float = None, include: dict = None) -> str:
-        # Default: include everything
+        # Default: include everything except broken porosity
         if include is None:
-            include = {k: True for k in ('pores','porosity','area','volume','sv','pore_density','thickness','cleaning_note')}
+            include = {k: True for k in ('pores','area','volume','sv','pore_density','thickness','cleaning_note')}
 
         # ---- nota de limpeza ----
         note = ""
@@ -446,8 +465,9 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             return f"<tr><td class='key'>{label}</td><td class='val'>{value}</td></tr>" if include.get(key, True) else ""
 
         rows = ""
-        rows += _row('pores',        'Pores',                int(m.get('count_pores') or 0))
-        rows += _row('porosity',     'Porosity (%)',         self._fmt(m.get('porosity_pct'), p=2))
+        rows += _row('pores',        'Pores',                m.get('count_pores') if m.get('count_pores') is not None else "—")
+        # TODO: Fix porosity calc
+        # rows += _row('porosity',     'Porosity (%)',         self._fmt(m.get('porosity_pct'), p=2))
         rows += _row('area',         'Surface area (mm²)',   self._fmt(m.get('surface_area_mm2'), p=6))
         rows += _row('volume',       'Volume (mm³)',         self._fmt(m.get('volume_mm3'), p=6))
         rows += _row('sv',           'S/V (mm⁻¹)',           self._fmt(m.get('S_over_V'), p=6))
