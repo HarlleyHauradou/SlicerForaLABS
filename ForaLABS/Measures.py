@@ -45,12 +45,24 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         try:
             uiWidget = slicer.util.loadUI(self.resourcePath('UI/Measures.ui'))
         except Exception:
-            import os
             ui_path = os.path.join(os.path.dirname(__file__), 'Resources', 'UI', 'Measures.ui')
             uiWidget = slicer.util.loadUI(ui_path)
         self.layout.addWidget(uiWidget)
         uiWidget.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
+
+        # Load ForaLABS lockup
+        try:
+            lockup_path = os.path.join(os.path.dirname(__file__), 'Resources', 'Icons', 'ForaLABS_lockup.png')
+            if os.path.exists(lockup_path):
+                pixmap = qt.QPixmap(lockup_path)
+                scaled_pixmap = pixmap.scaledToHeight(90, qt.Qt.SmoothTransformation) 
+                self.ui.lockupLabel.setPixmap(scaled_pixmap)
+                self.ui.lockupLabel.setAlignment(qt.Qt.AlignCenter)
+            else:
+                logging.error(f"Lockup image not found at: {lockup_path}")
+        except Exception as e:
+            logging.error(f"Failed to load lockup image: {e}")
 
         # Optional aliases (keep old attribute names)
         self.segSelector           = self.ui.segSelector
@@ -422,22 +434,6 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
 
         # ---- nota de limpeza ----
         note = ""
-        clean = m.get('cleaning') or {}
-        if include.get('cleaning_note', True):
-            try:
-                md = float(clean.get('min_diam_mm', 0.0))
-                mp = float(clean.get('min_diam_pct', 0.0))
-                bb = float(clean.get('bbox_diag', 0.0))
-                if mp > 0.0:
-                    kept = int(clean.get('regions_kept', 0))
-                    total = int(clean.get('regions_total', 0))
-                    overflow = bool(clean.get('overflow_largest_only', False))
-                    extra = " (fallback: largest component only)" if overflow else ""
-                    note = (f"<div class='sub' style='margin-top:6px;'>"
-                            f"Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. "
-                            f"(≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>")
-            except Exception:
-                pass
 
         # ---- thickness ----
         thick = m.get('thickness_mm') or {}

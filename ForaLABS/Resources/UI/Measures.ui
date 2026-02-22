@@ -11,8 +11,31 @@
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
-
-   <!-- ===== INPUT (QGroupBox) ===== -->
+   <item>
+    <widget class="QLabel" name="lockupLabel">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>60</height>
+      </size>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>16777215</width>
+       <height>100</height>
+      </size>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
    <item>
     <widget class="QGroupBox" name="inputGroupBox">
      <property name="title">
@@ -97,8 +120,6 @@
      </layout>
     </widget>
    </item>
-
-   <!-- ===== MEASURES TO INCLUDE (QGroupBox) ===== -->
    <item>
     <widget class="QGroupBox" name="measuresGroupBox">
      <property name="title">
@@ -168,7 +189,7 @@
       <item row="2" column="0">
        <widget class="QCheckBox" name="chkThickness">
         <property name="text">
-         <string>Thickness (stats)</string>
+         <string>Thickness</string>
         </property>
         <property name="checked">
          <bool>true</bool>
@@ -178,8 +199,6 @@
      </layout>
     </widget>
    </item>
-
-   <!-- ===== BUTTONS ROW ===== -->
    <item>
     <layout class="QHBoxLayout" name="hLayoutActions">
      <item>
@@ -191,28 +210,26 @@
      </item>
      <item>
       <widget class="QPushButton" name="exportButton">
-       <property name="text">
-        <string>Export PDF</string>
-       </property>
        <property name="enabled">
         <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>Export PDF</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="saveMeshButton">
-       <property name="text">
-        <string>Save Clean Mesh</string>
-       </property>
        <property name="enabled">
         <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>Save Clean Mesh</string>
        </property>
       </widget>
      </item>
     </layout>
    </item>
-
-   <!-- ===== THICKNESS MAP (QGroupBox) ===== -->
    <item>
     <widget class="QGroupBox" name="thicknessGroupBox">
      <property name="title">
@@ -221,86 +238,70 @@
      <layout class="QHBoxLayout" name="hLayoutThickness">
       <item>
        <widget class="QPushButton" name="genThickButton">
-        <property name="text">
-         <string>Generate on Mesh</string>
-        </property>
         <property name="enabled">
          <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Generate on Mesh</string>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QPushButton" name="expThickButton">
-        <property name="text">
-         <string>Export NRRD</string>
-        </property>
         <property name="enabled">
          <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Export NRRD</string>
         </property>
        </widget>
       </item>
       <item>
        <widget class="QPushButton" name="showThickButton">
-        <property name="text">
-         <string>Show in Slices</string>
-        </property>
         <property name="enabled">
          <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Show in Slices</string>
         </property>
        </widget>
       </item>
      </layout>
     </widget>
    </item>
-
-   <!-- ===== REPORT (expands to fill available space) ===== -->
    <item>
     <widget class="QTextBrowser" name="outputBrowser">
-     <property name="minimumSize">
-      <size>
-       <width>0</width>
-       <height>200</height>
-      </size>
-     </property>
      <property name="sizePolicy">
       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
        <horstretch>0</horstretch>
        <verstretch>1</verstretch>
       </sizepolicy>
      </property>
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>200</height>
+      </size>
+     </property>
     </widget>
    </item>
-
-   <!-- ===== STATUS ROW (label + progress bar) ===== -->
    <item>
     <layout class="QHBoxLayout" name="hLayoutStatus">
      <item>
       <widget class="QLabel" name="statusLabel">
-       <property name="text">
-        <string/>
-       </property>
        <property name="sizePolicy">
         <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
          <horstretch>0</horstretch>
          <verstretch>0</verstretch>
         </sizepolicy>
        </property>
+       <property name="text">
+        <string/>
+       </property>
       </widget>
      </item>
      <item>
       <widget class="QProgressBar" name="progressBar">
-       <property name="minimum">
-        <number>0</number>
-       </property>
-       <property name="maximum">
-        <number>100</number>
-       </property>
-       <property name="value">
-        <number>0</number>
-       </property>
-       <property name="visible">
-        <bool>false</bool>
-       </property>
        <property name="sizePolicy">
         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
          <horstretch>1</horstretch>
@@ -313,6 +314,18 @@
          <height>16</height>
         </size>
        </property>
+       <property name="visible">
+        <bool>false</bool>
+       </property>
+       <property name="minimum">
+        <number>0</number>
+       </property>
+       <property name="maximum">
+        <number>100</number>
+       </property>
+       <property name="value">
+        <number>0</number>
+       </property>
        <property name="textVisible">
         <bool>false</bool>
        </property>
@@ -320,16 +333,9 @@
      </item>
     </layout>
    </item>
-
   </layout>
  </widget>
  <customwidgets>
-  <customwidget>
-   <class>ctkCollapsibleButton</class>
-   <extends>QWidget</extends>
-   <header>ctkCollapsibleButton.h</header>
-   <container>1</container>
-  </customwidget>
   <customwidget>
    <class>ctkDoubleSpinBox</class>
    <extends>QWidget</extends>
