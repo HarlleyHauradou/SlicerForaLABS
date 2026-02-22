@@ -294,20 +294,21 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 traceback.print_exc()
                 thick = None
 
-        # Porosity (%)
-            # Porosity (VOL %) via voxel closing (robust % metric)
+        # Porosity (%) — wall-only via labelmap + CC filtering
         porosity_pct = float('nan')
         porosity_info = None
         try:
-            # NOTE: closing_radius_vox controls what is considered a "pore".
-            # Start with 2 or 3; increase if pores are larger than the voxel resolution.
-            porosity_pct, porosity_info = self._porosity_vol_pct_from_poly(
-                poly,
-                voxel_mm=max(0.02, float(thickness_voxel_mm) * 8.0),
-                closing_radius_vox=2
+            # Use wall thickness as auto-threshold for pore vs chamber
+            wt = None
+            if thick and thick.get("mean_mm", 0.0) > 0:
+                wt = thick["mean_mm"]
+            porosity_pct, porosity_info = self._porosity_wall_from_labelmap(
+                segNode, wallSegmentId,
+                wall_thickness_mm=wt,
             )
         except Exception as e:
-            logging.error(f"Porosity (voxel closing) error: {e}")
+            logging.error(f"Porosity (labelmap CC) error: {e}")
+            import traceback; traceback.print_exc()
             porosity_pct = float('nan')
             porosity_info = None
 
@@ -365,6 +366,17 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         thick_sd_um    = self._fmt((thick.get('std_mm')   * 1000.0) if thick else None, p=3)
         thick_voxel_um = self._fmt((thick.get('voxel_mm') * 1000.0) if thick else None, p=3)
 
+        # ---- porosity info summary ----
+        pinfo = m.get('porosity_info') or {}
+        if pinfo:
+            porosity_info_str = (
+                f"Wall: {self._fmt(pinfo.get('V_wall_mm3'), p=6)} mm³ | "
+                f"Pores: {self._fmt(pinfo.get('V_pores_mm3'), p=6)} mm³ ({pinfo.get('n_pores', 0)}) | "
+                f"Chambers excl.: {self._fmt(pinfo.get('V_chambers_mm3'), p=6)} mm³ ({pinfo.get('n_chambers', 0)})"
+            )
+        else:
+            porosity_info_str = "—"
+
         # ---- contexto para o template ----
         ctx = {
             "pore_count":            int(m.get('count_pores') or 0),
@@ -373,7 +385,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             "s_over_v":              self._fmt(m.get('S_over_V'), p=6),
             "pore_density_per_mm2":  self._fmt(m.get('pore_density_per_mm2'), p=6),
             "porosity_pct":          self._fmt(m.get('porosity_pct'), p=2),
-            "porosity_info":         m.get('porosity_info') or {},
+            "porosity_info":         porosity_info_str,
             "thick_mean_um":         thick_mean_um,
             "thick_sd_um":           thick_sd_um,
             "thick_voxel_um":        thick_voxel_um,
@@ -509,20 +521,12 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         dims = [int(np.ceil(dx/sp[0]))+2*margin_vox,
                 int(np.ceil(dy/sp[1]))+2*margin_vox,
                 int(np.ceil(dz/sp[2]))+2*margin_vox]
-        total_vox = int(dims[0]) * int(dims[1]) * int(dims[2])
-        MAX_VOX = 30_000_000  # ~30M voxels (seguro p/ uint8; acima disso é risco real)
-
-        if total_vox > MAX_VOX:
-            raise RuntimeError(
-                f"Voxelization too large: dims={dims} => {total_vox:,} voxels. "
-                f"Increase voxel_mm (currently {voxel_mm})."
-            )
         origin = [bounds[0]-margin_vox*sp[0], bounds[2]-margin_vox*sp[1], bounds[4]-margin_vox*sp[2]]
         img = vtk.vtkImageData(); img.SetSpacing(sp); img.SetOrigin(origin); img.SetDimensions(dims); img.AllocateScalars(vtk.VTK_UNSIGNED_CHAR,1)
-        # fill with 1 (NO big numpy allocation)
-        scalars = img.GetPointData().GetScalars()
-        np_s = ns.vtk_to_numpy(scalars)  # view of vtk memory
-        np_s[:] = 1
+        # fill with 1
+        arr = np.ones((dims[2], dims[1], dims[0]), dtype=np.uint8)
+        vtkArr = ns.numpy_to_vtk(arr.ravel(order='C'), deep=1, array_type=vtk.VTK_UNSIGNED_CHAR)
+        img.GetPointData().SetScalars(vtkArr)
         # mesh stencil
         p2s = vtk.vtkPolyDataToImageStencil(); p2s.SetInputData(poly); p2s.SetOutputSpacing(sp); p2s.SetOutputOrigin(origin); p2s.SetOutputWholeExtent(img.GetExtent()); p2s.Update()
         st = vtk.vtkImageStencil(); st.SetInputData(img); st.SetStencilConnection(p2s.GetOutputPort()); st.ReverseStencilOff(); st.SetBackgroundValue(0); st.Update()
@@ -714,50 +718,111 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             return {"mean_mm": 0.0, "std_mm": 0.0, "voxel_mm": float(voxel_mm)}
         return {"mean_mm": float(np.mean(vals)), "std_mm": float(np.std(vals)), "voxel_mm": float(voxel_mm)}
     
-        # ---------- Porosity (VOL %) via voxelization + morphological closing ----------
-    def _porosity_vol_pct_from_poly(self, poly, voxel_mm=0.003, closing_radius_vox=2):
+    # ---------- Porosity (VOL %) — wall-only via labelmap + CC filtering ----------
+    def _porosity_wall_from_labelmap(self, segNode, wallSegmentId,
+                                      closing_radius_mm=0.015,
+                                      max_pore_vol_mm3=None,
+                                      wall_thickness_mm=None):
         """
-        Estimates volumetric porosity (%) by voxelizing the mesh (solid mask) and
-        applying a binary morphological closing to 'seal' small through-pores.
-        
-        V_material  = volume of the voxelized solid
-        V_envelope  = volume after closing (approx. solid if pores were filled)
-        V_pores     = V_envelope - V_material
-        Porosity(%) = 100 * V_pores / V_envelope
+        Computes wall porosity excluding chambers.
+
+        1. Export the wall segment as a binary labelmap (native µCT resolution).
+        2. Morphological closing → seals pores inside the wall material.
+        3. void = closed − wall → all internal cavities.
+        4. Connected-component labelling on void.
+        5. Filter out large components (chambers); keep small ones (pores).
+        6. Porosity(%) = 100 × V_pores / (V_wall + V_pores).
+
+        Parameters
+        ----------
+        segNode : vtkMRMLSegmentationNode
+        wallSegmentId : str
+        closing_radius_mm : float
+            Closing kernel radius in mm (converted to voxels automatically).
+        max_pore_vol_mm3 : float or None
+            Maximum volume (mm³) for a void component to be considered a pore.
+            If None, auto-determined from *wall_thickness_mm* or 95th-percentile.
+        wall_thickness_mm : float or None
+            Mean wall thickness (mm) — used to auto-set *max_pore_vol_mm3*.
         """
-        # voxelize solid
-        mask, spacing, origin, shape = self._voxelize_poly_solid(poly, voxel_mm=float(voxel_mm), margin_vox=3)
-        mask_u8 = sitk.Cast(mask > 0, sitk.sitkUInt8)
+        # --- 1. Binary labelmap at native resolution -------------------------
+        labelmapNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+        try:
+            slicer.modules.segmentations.logic().ExportSegmentsToLabelmapNode(
+                segNode, [wallSegmentId], labelmapNode
+            )
+            arr = slicer.util.arrayFromVolume(labelmapNode)          # (k,j,i)
+            spacing = tuple(labelmapNode.GetSpacing())               # (sx,sy,sz) mm
+            origin  = tuple(labelmapNode.GetOrigin())
+        finally:
+            slicer.mrmlScene.RemoveNode(labelmapNode)
 
-        r = int(max(1, closing_radius_vox))
+        mask = sitk.GetImageFromArray((arr > 0).astype(np.uint8))
+        mask.SetSpacing(spacing)
+        mask.SetOrigin(origin)
 
-        # close small channels (pores)
-        closed = sitk.BinaryMorphologicalClosing(
-            mask_u8,
-            [r, r, r],
-            sitk.sitkBall
-        )
+        # --- 2. Morphological closing ----------------------------------------
+        voxel_mm = float(min(spacing))                               # isotrópico ref.
+        r = int(max(1, round(closing_radius_mm / voxel_mm)))
+        closed = sitk.BinaryMorphologicalClosing(mask, [r, r, r], sitk.sitkBall)
 
-        # robust physical volumes (mm³) without converting to numpy
+        # --- 3. Void (pores + chambers) --------------------------------------
+        void_mask = sitk.And(closed, sitk.Not(mask))                 # 1 where filled
+
+        # --- 4. Connected-component labelling --------------------------------
+        cc = sitk.ConnectedComponent(void_mask)
+        stats = sitk.LabelShapeStatisticsImageFilter()
+        stats.Execute(cc)
+
+        labels  = stats.GetLabels()
+        volumes = {lb: float(stats.GetPhysicalSize(lb)) for lb in labels}
+
+        # --- 5. Auto-threshold for pore vs chamber ---------------------------
+        if max_pore_vol_mm3 is None:
+            if wall_thickness_mm and wall_thickness_mm > 0:
+                # Pore fits inside the wall → max pore diameter ~ wall thickness
+                # Use sphere volume as upper bound
+                r_pore = wall_thickness_mm / 2.0
+                max_pore_vol_mm3 = (4.0 / 3.0) * np.pi * (r_pore ** 3)
+            elif volumes:
+                # Heuristic: 95th percentile separates pores from chambers
+                vols = sorted(volumes.values())
+                max_pore_vol_mm3 = float(np.percentile(vols, 95)) if len(vols) >= 5 else float(max(vols))
+            else:
+                max_pore_vol_mm3 = float('inf')
+
+        # --- 6. Classify and accumulate --------------------------------------
+        V_pores    = 0.0
+        V_chambers = 0.0
+        n_pores    = 0
+        n_chambers = 0
+        for lb, vol in volumes.items():
+            if vol <= max_pore_vol_mm3:
+                V_pores += vol
+                n_pores += 1
+            else:
+                V_chambers += vol
+                n_chambers += 1
+
+        # Wall material volume
         ls = sitk.LabelShapeStatisticsImageFilter()
+        ls.Execute(mask)
+        V_wall = float(ls.GetPhysicalSize(1)) if ls.HasLabel(1) else 0.0
 
-        ls.Execute(mask_u8)
-        V_material = float(ls.GetPhysicalSize(1)) if ls.HasLabel(1) else 0.0
-
-        ls.Execute(closed)
-        V_envelope = float(ls.GetPhysicalSize(1)) if ls.HasLabel(1) else 0.0
-
-        V_pores = max(0.0, V_envelope - V_material)
-        porosity_pct = (100.0 * V_pores / V_envelope) if V_envelope > 0 else float('nan')
+        V_wall_plus_pores = V_wall + V_pores
+        porosity_pct = (100.0 * V_pores / V_wall_plus_pores) if V_wall_plus_pores > 0 else float('nan')
 
         info = {
-            "method": "voxel_closing",
-            "voxel_mm": float(voxel_mm),
-            "closing_radius_vox": int(r),
-            "closing_radius_mm": float(r) * float(voxel_mm),
-            "V_material_mm3": float(V_material),
-            "V_envelope_mm3": float(V_envelope),
-            "V_pores_mm3": float(V_pores),
+            "method":              "labelmap_cc",
+            "voxel_mm":            voxel_mm,
+            "closing_radius_vox":  int(r),
+            "closing_radius_mm":   float(r * voxel_mm),
+            "max_pore_vol_mm3":    float(max_pore_vol_mm3),
+            "V_wall_mm3":          float(V_wall),
+            "V_pores_mm3":         float(V_pores),
+            "V_chambers_mm3":      float(V_chambers),
+            "n_pores":             int(n_pores),
+            "n_chambers":          int(n_chambers),
         }
         return float(porosity_pct), info
 
