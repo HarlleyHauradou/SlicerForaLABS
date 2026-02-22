@@ -65,6 +65,7 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.showThickBtn          = self.ui.showThickButton
         self.refreshSegsBtn        = self.ui.refreshSegsButton
         self.statusLabel           = getattr(self.ui, 'statusLabel', qt.QLabel())
+        self.progressBar           = getattr(self.ui, 'progressBar', qt.QProgressBar())
 
         # Measure-selection checkboxes
         self.chkPores        = self.ui.chkPores
@@ -110,6 +111,29 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.layout.setStretchFactor(uiWidget, 1)
         self.layout.setStretchFactor(settingsButton, 0)
 
+
+    # ---- Progress helpers ----
+    def _showProgress(self, msg, value=0):
+        """Show status text with a determinate progress bar."""
+        self.statusLabel.text = msg
+        self.progressBar.setValue(value)
+        self.progressBar.setVisible(True)
+        slicer.app.processEvents()
+
+    def _updateProgress(self, value, msg=None):
+        """Update progress bar value (0-100) and optionally the status text."""
+        self.progressBar.setValue(value)
+        if msg:
+            self.statusLabel.text = msg
+        slicer.app.processEvents()
+
+    def _hideProgress(self, msg):
+        """Hide progress bar and show final status text."""
+        self.progressBar.setValue(100)
+        slicer.app.processEvents()
+        self.progressBar.setVisible(False)
+        self.statusLabel.text = msg
+        slicer.app.processEvents()
 
     # ---- UI helpers ----
     def onRefreshSegments(self):
@@ -160,17 +184,18 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         include = self._read_include_flags()
 
-        self.statusLabel.text = "Computing…"; slicer.app.processEvents()
+        self._showProgress("Computing…", 0)
         t0 = time.perf_counter()
         metrics = self.logic.compute_metrics(
             segNode, wallSid,
-            minDiamPct=minPct, removeUnref=rmUnref, thickness_voxel_mm=thickVoxel
+            minDiamPct=minPct, removeUnref=rmUnref, thickness_voxel_mm=thickVoxel,
+            progressCallback=lambda v, m=None: self._updateProgress(v, m)
         )
         dt = time.perf_counter() - t0
 
         html = self.logic.render_metrics_html(metrics, elapsed=dt, include=include)
         self.outputBrowser.setHtml(html)
-        self.statusLabel.text = f"Time (≈ {dt:.2f} s)."
+        self._hideProgress(f"Time (≈ {dt:.2f} s).")
 
         # Enable buttons that depend on computed results
         self.exportBtn.setEnabled(True)
@@ -219,12 +244,12 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError:
             rmUnref = bool(self.removeUnrefCheck.checked)
-        self.statusLabel.text = "Generating thickness map…"; slicer.app.processEvents()
+        self._showProgress("Generating thickness map…")
         ok, modelNode = self.logic.generate_thickness_map_on_mesh(segNode, wallSid, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref)
         if ok:
-            self.statusLabel.text = "Map applied to mesh (see colored model in the scene)."
+            self._hideProgress("Map applied to mesh (see colored model in the scene).")
         else:
-            self.statusLabel.text = "Failed to generate thickness map. Check the log."
+            self._hideProgress("Failed to generate thickness map. Check the log.")
 
     def onExportThicknessMap(self):
         segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
@@ -247,14 +272,14 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError:
             rmUnref = bool(self.removeUnrefCheck.checked)
-        self.statusLabel.text = "Computing & exporting map (NRRD)…"; slicer.app.processEvents()
+        self._showProgress("Computing & exporting map (NRRD)…")
         ok, finalPath = self.logic.export_thickness_nrrd(segNode, wallSid, outPath, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref)
         if ok:
             qt.QMessageBox.information(slicer.util.mainWindow(), "Measures", f"Map saved to: {finalPath}")
-            self.statusLabel.text = "NRRD map exported."
+            self._hideProgress("NRRD map exported.")
         else:
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Measures", "Failed to export map.")
-            self.statusLabel.text = "Failed to export map."
+            self._hideProgress("Failed to export map.")
 
     def onShowThicknessMapSlices(self):
         segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
@@ -272,12 +297,12 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError:
             rmUnref = bool(self.removeUnrefCheck.checked)
-        self.statusLabel.text = "Preparing thickness volume…"; slicer.app.processEvents()
+        self._showProgress("Preparing thickness volume…")
         ok, volNode = self.logic.show_thickness_in_slices(segNode, wallSid, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref)
         if ok:
-            self.statusLabel.text = "Map displayed in slice views (Red/Yellow/Green)."
+            self._hideProgress("Map displayed in slice views (Red/Yellow/Green).")
         else:
-            self.statusLabel.text = "Failed to show in slices. Check the log."
+            self._hideProgress("Failed to show in slices. Check the log.")
 
 
 
@@ -294,7 +319,13 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         self.last_thick_model = None # vtkMRMLModelNode
 
     def compute_metrics(self, segNode, wallSegmentId, minDiamPct=10.0, removeUnref=True,
-                       thickness_enabled=True, thickness_voxel_mm=0.003):
+                       thickness_enabled=True, thickness_voxel_mm=0.003,
+                       progressCallback=None):
+        def _progress(val, msg=None):
+            if progressCallback:
+                progressCallback(val, msg)
+
+        _progress(5, "Preparing mesh…")
         poly = self._segment_to_polydata(segNode, wallSegmentId)
         poly = self._prepare_polydata(poly)
 
@@ -302,14 +333,17 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         bounds = poly.GetBounds(); dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
         bbox_diag = (dx*dx + dy*dy + dz*dz)**0.5 if poly.GetNumberOfPoints()>0 else 0.0
         minDiamMM = (bbox_diag * (float(minDiamPct)/100.0)) if minDiamPct and bbox_diag>0 else 0.0
+        _progress(15, "Cleaning mesh…")
         poly, clean_info = self._remove_isolated_pieces_by_diameter(poly, minDiamMM, removeUnref=removeUnref)
         clean_info.update({"min_diam_pct": float(minDiamPct), "bbox_diag": float(bbox_diag)})
         self.last_clean_poly = poly
 
         # Area and volume
+        _progress(30, "Computing area & volume…")
         A_mesh, V_mesh = self._surface_area_and_volume(poly)
        
         # Pore count via genus
+        _progress(45, "Counting pores…")
         pore_count = self._genus_based_pore_count(poly)
 
         # Derived
@@ -320,6 +354,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         # Thickness (medial)
         thick = None
         if thickness_enabled:
+            _progress(60, "Computing thickness…")
             try:
                 # generate map and get stats
                 sitk_img, info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(thickness_voxel_mm))
@@ -351,6 +386,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         else:
             porosity_pct = float('nan')
 
+        _progress(90, "Finalizing…")
         metrics = {
             "count_pores": int(pore_count),
             "surface_area_mm2": float(A_mesh),
@@ -363,6 +399,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         }
 
         self.last_metrics = metrics
+        _progress(100, "Done.")
         return metrics
 
     # ---------- Render (HTML) ----------
