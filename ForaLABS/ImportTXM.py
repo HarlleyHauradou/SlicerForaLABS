@@ -88,7 +88,21 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
             ui_path = os.path.join(os.path.dirname(__file__), 'Resources', 'UI', 'ImportTXM.ui')
             uiWidget = slicer.util.loadUI(ui_path)
         self.layout.addWidget(uiWidget)
+        uiWidget.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
+
+        # Load ForaLABS lockup
+        try:
+            lockup_path = os.path.join(os.path.dirname(__file__), 'Resources', 'Icons', 'ForaLABS_lockup.png')
+            if os.path.exists(lockup_path):
+                pixmap = qt.QPixmap(lockup_path)
+                scaled_pixmap = pixmap.scaledToHeight(90, qt.Qt.SmoothTransformation) 
+                self.ui.lockupLabel.setPixmap(scaled_pixmap)
+                self.ui.lockupLabel.setAlignment(qt.Qt.AlignCenter)
+            else:
+                logging.error(f"Lockup image not found at: {lockup_path}")
+        except Exception as e:
+            logging.error(f"Failed to load lockup image: {e}")
 
         # Aliases (optional, keep old attribute names)
         self.txmPathEdit  = self.ui.txmPathEdit
@@ -98,8 +112,9 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
         self.importBtn    = self.ui.importBtn
         self.metaBtn      = self.ui.metaBtn
         self.spacingLabel = self.ui.spacingLabel
-        self.infoText     = self.ui.infoText
         self.progress     = self.ui.progress
+        self.statusLabel  = getattr(self.ui, 'statusLabel', qt.QLabel())
+
 
         # Configure ctkPathLineEdit filters (API compatibility)
         try:
@@ -139,30 +154,37 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
 
     # ---------------------------- GUI helpers ---------------------------- #
 
-    def _msg(self, text):
+    def _msg(self, text, val=None):
         logging.info(text)
-        # Show as plain text (no escaping) to avoid entities like &#x27;
-        self.infoText.append(str(text))
+        self.statusLabel.text = str(text)
         slicer.util.showStatusMessage(str(text), 3000)
+        if val is not None:
+            self._progress(val)
+        else:
+            slicer.app.processEvents()
 
-    def _err(self, text):
+    def _err(self, text, val=None):
         logging.error(text)
-        # Use HTML only for color, keeping regular quotes (quote=False)
-        safe = html.escape(str(text), quote=False)
-        self.infoText.append("<span style='color:#e53935;'>%s</span>" % safe)
+        self.statusLabel.text = "Error!"
         slicer.util.showStatusMessage(str(text), 5000)
+        if val is not None:
+            self._progress(val)
 
     def _progress(self, val):
         self.progress.setValue(int(val))
+        if val > 0 and val < 100:
+            self.progress.setVisible(True)
+        elif val == 100 or val == 0:
+            self.progress.setVisible(False)
         slicer.app.processEvents()
 
     def _updateSpacingLabel(self, spacing_mm):
         if not spacing_mm:
-            self.spacingLabel.setText("Applied spacing (mm): —")
+            self.spacingLabel.setText("—")
             return
         sx, sy, sz = spacing_mm
         self.spacingLabel.setText(
-            "Applied spacing (mm): X={:.7f}, Y={:.7f}, Z={:.7f}".format(sx, sy, sz)
+            "X={:.7f}, Y={:.7f}, Z={:.7f}".format(sx, sy, sz)
         )
 
     # ----------------------------- actions -------------------------------- #
@@ -172,7 +194,7 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
         outDir = self.outDirEdit.currentPath.strip()
 
         if not txmPath or not os.path.isfile(txmPath):
-            self._err("Select a valid .txm file.")
+            self._err("Select a valid .txm file.", 0)
             return
 
         if not outDir:
@@ -187,19 +209,15 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
         flipZ = self.flipZCheck.isChecked()
 
         try:
-            self._progress(5)
-            self._msg("Checking/installing dependency 'olefile'...")
+            self._msg("Checking/installing dependency 'olefile'...", 5)
             self.logic.ensurePackages()
-            self._progress(15)
 
-            self._msg(f"Reading TXM (OLE): {txmPath}")
+            self._msg(f"Reading TXM (OLE): {txmPath}", 15)
             arr, meta = self.logic.readTXM(txmPath)
             if arr is None:
                 raise RuntimeError("Failed to read the .txm file")
 
-            self._progress(45)
-
-            self._msg("Inferring spacing (voxel size) and converting units...")
+            self._msg("Inferring spacing (voxel size) and converting units...", 45)
             spacing_mm = self.logic.inferSpacingMM(meta, unit_hint=unit)
             if spacing_mm is None:
                 self._msg("Voxel/pixel metadata not found; assuming 1.0000000 mm isotropic.")
@@ -209,15 +227,11 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
                 self._msg("Applying Z flip...")
                 arr = arr[::-1, :, :]
 
-            self._progress(70)
-
-            self._msg("Writing NRRD with mm spacing and loading into Slicer...")
+            self._msg("Writing NRRD with mm spacing and loading into Slicer...", 70)
             nrrdPath, node = self.logic.saveAndLoadNRRD(arr, spacing_mm, txmPath, outDir)
 
-            self._progress(90)
-
             self._updateSpacingLabel(spacing_mm)
-            self._msg("OK! NRRD: {}".format(nrrdPath))
+            self._msg("OK! NRRD: {}".format(nrrdPath), 90)
             self._lastMeta = meta
             self._lastNRRD = nrrdPath
             self._lastNode = node
@@ -235,13 +249,11 @@ class ImportTXMWidget(ScriptedLoadableModuleWidget):
                     slicer.util.setSliceViewerLayers(background=node)
                     slicer.util.resetSliceViews()
 
-            self._progress(100)
-            self._msg("Done.")
+            self._msg("Done.", 100)
 
         except Exception as e:
             tb = traceback.format_exc()
-            self._err(f"Error: {e}\n{tb}")
-            self._progress(0)
+            self._err(f"Error: {e}\n{tb}", 0)
 
     def onShowMeta(self):
         if not self._lastMeta:
