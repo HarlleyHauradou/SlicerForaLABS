@@ -49,14 +49,12 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             ui_path = os.path.join(os.path.dirname(__file__), 'Resources', 'UI', 'Measures.ui')
             uiWidget = slicer.util.loadUI(ui_path)
         self.layout.addWidget(uiWidget)
+        uiWidget.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
         # Optional aliases (keep old attribute names)
         self.segSelector           = self.ui.segSelector
         self.wallSegmentCombo      = self.ui.wallSegmentCombo
-        self.refreshSegsBtn        = self.ui.refreshSegsButton
-        self.minDiamPctSpin        = self.ui.minDiamPctSpin
-        self.removeUnrefCheck      = self.ui.removeUnrefCheck
         self.computeBtn            = self.ui.computeButton
         self.exportBtn             = self.ui.exportButton
         self.saveMeshBtn           = self.ui.saveMeshButton
@@ -65,7 +63,17 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.genThickBtn           = self.ui.genThickButton
         self.expThickBtn           = self.ui.expThickButton
         self.showThickBtn          = self.ui.showThickButton
+        self.refreshSegsBtn        = self.ui.refreshSegsButton
         self.statusLabel           = getattr(self.ui, 'statusLabel', qt.QLabel())
+
+        # Measure-selection checkboxes
+        self.chkPores        = self.ui.chkPores
+        self.chkPorosity     = self.ui.chkPorosity
+        self.chkArea         = self.ui.chkArea
+        self.chkVolume       = self.ui.chkVolume
+        self.chkSV           = self.ui.chkSV
+        self.chkPoreDensity  = self.ui.chkPoreDensity
+        self.chkThickness    = self.ui.chkThickness
 
         # MRML hookup required for qMRMLNodeComboBox in .ui
         self.segSelector.setMRMLScene(slicer.mrmlScene)
@@ -79,7 +87,28 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.expThickBtn.clicked.connect(self.onExportThicknessMap)
         self.showThickBtn.clicked.connect(self.onShowThicknessMapSlices)
 
-        self.layout.addStretch(1)
+        # --- Settings section (stuck to bottom like Data Probe) ---
+        settingsButton = ctk.ctkCollapsibleButton()
+        settingsButton.text = "Settings"
+        settingsButton.collapsed = True
+        self.layout.addWidget(settingsButton)
+        settingsLayout = qt.QFormLayout(settingsButton)
+
+        self.minDiamPctSpin = ctk.ctkDoubleSpinBox()
+        self.minDiamPctSpin.decimals = 1
+        self.minDiamPctSpin.minimum = 0.0
+        self.minDiamPctSpin.maximum = 100.0
+        self.minDiamPctSpin.value = 10.0
+        settingsLayout.addRow("Remove islands: % of BBox diagonal (0=off)", self.minDiamPctSpin)
+
+        self.removeUnrefCheck = qt.QCheckBox("Remove unreferenced vertices")
+        self.removeUnrefCheck.checked = True
+        settingsLayout.addRow(self.removeUnrefCheck)
+
+        # uiWidget expands to fill all available space (report area grows);
+        # Settings stays compact at the bottom.
+        self.layout.setStretchFactor(uiWidget, 1)
+        self.layout.setStretchFactor(settingsButton, 0)
 
 
     # ---- UI helpers ----
@@ -101,6 +130,18 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return sid
 
     # ---- Actions ----
+    def _read_include_flags(self):
+        """Read the measure-selection checkboxes and return a dict."""
+        return {
+            "pores": self.chkPores.isChecked(),
+            "porosity": self.chkPorosity.isChecked(),
+            "area": self.chkArea.isChecked(),
+            "volume": self.chkVolume.isChecked(),
+            "sv": self.chkSV.isChecked(),
+            "pore_density": self.chkPoreDensity.isChecked(),
+            "thickness": self.chkThickness.isChecked(),
+        }
+
     def onCompute(self):
         segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
         wallSid = self._currentSegmentId(); assert wallSid, "Select the WALL segment."
@@ -117,6 +158,8 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         except TypeError: 
             thickVoxel = float(self.thickVoxelSpin.value)
 
+        include = self._read_include_flags()
+
         self.statusLabel.text = "Computing…"; slicer.app.processEvents()
         t0 = time.perf_counter()
         metrics = self.logic.compute_metrics(
@@ -125,15 +168,23 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         )
         dt = time.perf_counter() - t0
 
-        html = self.logic.render_metrics_html(metrics, elapsed=dt)
+        html = self.logic.render_metrics_html(metrics, elapsed=dt, include=include)
         self.outputBrowser.setHtml(html)
         self.statusLabel.text = f"Time (≈ {dt:.2f} s)."
+
+        # Enable buttons that depend on computed results
+        self.exportBtn.setEnabled(True)
+        self.saveMeshBtn.setEnabled(True)
+        self.genThickBtn.setEnabled(True)
+        self.expThickBtn.setEnabled(True)
+        self.showThickBtn.setEnabled(True)
 
     def onExport(self):
         metrics = self.logic.last_metrics; assert metrics, "Compute metrics first."
         outDir = qt.QFileDialog.getExistingDirectory(None, "Choose output folder")
         if not outDir: return
-        pdfPath = self.logic.export_results(outDir)
+        include = self._read_include_flags()
+        pdfPath = self.logic.export_results(outDir, include=include)
         qt.QMessageBox.information(slicer.util.mainWindow(), "Measures", f"Exported: - {pdfPath}")
 
     def onSaveCleanMesh(self):
@@ -327,24 +378,29 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             return "—"
         return f"{float(x):.{p}f}"
 
-    def render_metrics_html(self, m: dict, elapsed: float = None) -> str:
-        # ---- nota de limpeza (igual ao seu código) ----
+    def render_metrics_html(self, m: dict, elapsed: float = None, include: dict = None) -> str:
+        # Default: include everything
+        if include is None:
+            include = {k: True for k in ('pores','porosity','area','volume','sv','pore_density','thickness','cleaning_note')}
+
+        # ---- nota de limpeza ----
         note = ""
         clean = m.get('cleaning') or {}
-        try:
-            md = float(clean.get('min_diam_mm', 0.0))
-            mp = float(clean.get('min_diam_pct', 0.0))
-            bb = float(clean.get('bbox_diag', 0.0))
-            if mp > 0.0:
-                kept = int(clean.get('regions_kept', 0))
-                total = int(clean.get('regions_total', 0))
-                overflow = bool(clean.get('overflow_largest_only', False))
-                extra = " (fallback: largest component only)" if overflow else ""
-                # note = (f"<div class='sub' style='margin-top:6px;'>"
-                #         f"Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. "
-                #         f"(≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>")
-        except Exception:
-            pass
+        if include.get('cleaning_note', True):
+            try:
+                md = float(clean.get('min_diam_mm', 0.0))
+                mp = float(clean.get('min_diam_pct', 0.0))
+                bb = float(clean.get('bbox_diag', 0.0))
+                if mp > 0.0:
+                    kept = int(clean.get('regions_kept', 0))
+                    total = int(clean.get('regions_total', 0))
+                    overflow = bool(clean.get('overflow_largest_only', False))
+                    extra = " (fallback: largest component only)" if overflow else ""
+                    note = (f"<div class='sub' style='margin-top:6px;'>"
+                            f"Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. "
+                            f"(≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>")
+            except Exception:
+                pass
 
         # ---- thickness ----
         thick = m.get('thickness_mm') or {}
@@ -352,19 +408,26 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         thick_sd_um    = self._fmt((thick.get('std_mm')   * 1000.0) if thick else None, p=3)
         thick_voxel_um = self._fmt((thick.get('voxel_mm') * 1000.0) if thick else None, p=3)
 
-        # ---- contexto para o template ----
+        # ---- build conditional rows ----
+        def _row(key, label, value):
+            return f"<tr><td class='key'>{label}</td><td class='val'>{value}</td></tr>" if include.get(key, True) else ""
+
+        rows = ""
+        rows += _row('pores',        'Pores',                int(m.get('count_pores') or 0))
+        rows += _row('porosity',     'Porosity (%)',         self._fmt(m.get('porosity_pct'), p=2))
+        rows += _row('area',         'Surface area (mm²)',   self._fmt(m.get('surface_area_mm2'), p=6))
+        rows += _row('volume',       'Volume (mm³)',         self._fmt(m.get('volume_mm3'), p=6))
+        rows += _row('sv',           'S/V (mm⁻¹)',           self._fmt(m.get('S_over_V'), p=6))
+        rows += _row('pore_density', 'Pore density (mm⁻²)',  self._fmt(m.get('pore_density_per_mm2'), p=6))
+        if include.get('thickness', True):
+            rows += f"<tr><td class='key'>Thickness mean (µm)</td><td class='val'>{thick_mean_um}</td></tr>"
+            rows += f"<tr><td class='key'>Thickness SD (µm)</td><td class='val'>{thick_sd_um}</td></tr>"
+            rows += f"<tr><td class='key'>Thickness voxel (µm)</td><td class='val'>{thick_voxel_um}</td></tr>"
+
         ctx = {
-            "pore_count":            int(m.get('count_pores') or 0),
-            "surface_area_mm2":      self._fmt(m.get('surface_area_mm2'), p=6),
-            "volume_mm3":            self._fmt(m.get('volume_mm3'), p=6),
-            "s_over_v":              self._fmt(m.get('S_over_V'), p=6),
-            "pore_density_per_mm2":  self._fmt(m.get('pore_density_per_mm2'), p=6),
-            "porosity_pct": self._fmt(m.get('porosity_pct'), p=2),
-            "thick_mean_um":         thick_mean_um,
-            "thick_sd_um":           thick_sd_um,
-            "thick_voxel_um":        thick_voxel_um,
-            "foot_left":             ("Morphometric measurements using ForaLABS"),
-            "note":                  note,
+            "rows":       rows,
+            "foot_left":  "Morphometric measurements using ForaLABS",
+            "note":       note,
         }
 
         # ---- carrega template e substitui ----
@@ -374,17 +437,11 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 tpl = Template(f.read())
             return tpl.safe_substitute(ctx)
         except Exception as e:
-            # Fallback: algo mínimo se o template não estiver disponível
+            # Fallback mínimo
             return (f"<html><body><h3>Measures</h3>"
-                    f"<p>Pores: {ctx['pore_count']}</p>"
-                    f"<p>Area: {ctx['surface_area_mm2']} mm²</p>"
-                    f"<p>Volume: {ctx['volume_mm3']} mm³</p>"
-                    f"<p>S/V: {ctx['s_over_v']} mm⁻¹</p>"
-                    f"<p>Pore density: {ctx['pore_density_per_mm2']} mm⁻²</p>"
-                    f"<p>Thickness mean: {ctx['thick_mean_um']} µm</p>"
-                    f"<p>Thickness voxel: {ctx['thick_voxel_um']} µm</p>"
+                    f"<table class='kv'>{rows}</table>"
                     f"<div class='sub'>{ctx['foot_left']}</div>"
-                    f"{ctx['note']}</body></html>")
+                    f"{note}</body></html>")
 
 
      # ---------- EXPORT Helper ----------
@@ -413,9 +470,9 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             doc.print(printer)
 
     # ---------- Export ----------
-    def export_results(self, outDir):
+    def export_results(self, outDir, include=None):
         import os, logging
-        html = self.render_metrics_html(self.last_metrics or {}, elapsed=None)
+        html = self.render_metrics_html(self.last_metrics or {}, elapsed=None, include=include)
         if not os.path.isdir(outDir):
             os.makedirs(outDir, exist_ok=True)
         pdfPath = os.path.join(outDir, "Measures_mesh_metrics.pdf")
