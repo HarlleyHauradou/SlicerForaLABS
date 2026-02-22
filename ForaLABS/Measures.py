@@ -418,6 +418,36 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         #     porosity_pct = (pore_density / float(pore_count)) * 100.0
 
         _progress(90, "Finalizing…")
+        
+        # Identification Info
+        try:
+            volNode = segNode.GetNodeReference("referenceImageGeometryRef")
+            volName = volNode.GetName() if volNode else "—"
+        except Exception:
+            volName = "—"
+            
+        try:
+            segName = segNode.GetName() if segNode else "—"
+        except Exception:
+            segName = "—"
+            
+        try:
+            segmentation = segNode.GetSegmentation()
+            segment = segmentation.GetSegment(wallSegmentId) if segmentation else None
+            segmentName = segment.GetName() if segment else "—"
+        except Exception:
+            segmentName = "—"
+            
+        import datetime
+        generation_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        id_info = {
+            "volume_name": volName,
+            "segmentation_name": segName,
+            "segment_name": segmentName,
+            "time": generation_time
+        }
+        
         metrics = {
             "count_pores": pore_count,
             "surface_area_mm2": A_mesh if A_mesh is not None else float('nan'),
@@ -426,7 +456,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             "pore_density_per_mm2": float(pore_density),
             # "porosity_pct": float(porosity_pct), 
             "cleaning": clean_info,
-            "thickness_mm": thick
+            "thickness_mm": thick,
+            "id_info": id_info
         }
 
         self.last_metrics = metrics
@@ -446,7 +477,7 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             return "—"
         return f"{float(x):.{p}f}"
 
-    def render_metrics_html(self, m: dict, elapsed: float = None, include: dict = None) -> str:
+    def render_metrics_html(self, m: dict, elapsed: float = None, include: dict = None, is_export: bool = False) -> str:
         # Default: include everything except broken porosity
         if include is None:
             include = {k: True for k in ('pores','area','volume','sv','pore_density','thickness','cleaning_note')}
@@ -477,14 +508,35 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             rows += f"<tr><td class='key'>Thickness SD (µm)</td><td class='val'>{thick_sd_um}</td></tr>"
             rows += f"<tr><td class='key'>Thickness voxel (µm)</td><td class='val'>{thick_voxel_um}</td></tr>"
 
+        import base64
+        lockup_b64 = ""
+        try:
+            lockup_path = os.path.join(os.path.dirname(__file__), 'Resources', 'Icons', 'ForaLABS_lockup.png')
+            if os.path.exists(lockup_path):
+                with open(lockup_path, "rb") as image_file:
+                    lockup_b64 = base64.b64encode(image_file.read()).decode('utf-8')
+        except Exception as e:
+            logging.error(f"Failed to load lockup image for export: {e}")
+
+        # ---- identification rows ----
+        id_info = m.get('id_info', {})
+        id_rows = ""
+        id_rows += _row('id_vol', 'Volume', id_info.get('volume_name', '—'))
+        id_rows += _row('id_seg', 'Segmentation', id_info.get('segmentation_name', '—'))
+        id_rows += _row('id_segment', 'Segment', id_info.get('segment_name', '—'))
+        id_rows += _row('id_time', 'Date / Time', id_info.get('time', '—'))
+
         ctx = {
             "rows":       rows,
+            "id_rows":    id_rows,
             "foot_left":  "Morphometric measurements using ForaLABS",
             "note":       note,
+            "lockup_b64": lockup_b64
         }
 
         # ---- carrega template e substitui ----
-        tpl_path = self._resource_path('HTML/MeasuresReport.html')
+        tpl_name = 'HTML/MeasuresReportExport.html' if is_export else 'HTML/MeasuresReport.html'
+        tpl_path = self._resource_path(tpl_name)
         try:
             with open(tpl_path, 'r', encoding='utf-8') as f:
                 tpl = Template(f.read())
@@ -525,10 +577,10 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
     # ---------- Export ----------
     def export_results(self, outDir, include=None):
         import os, logging
-        html = self.render_metrics_html(self.last_metrics or {}, elapsed=None, include=include)
+        html = self.render_metrics_html(self.last_metrics or {}, elapsed=None, include=include, is_export=True)
         if not os.path.isdir(outDir):
             os.makedirs(outDir, exist_ok=True)
-        pdfPath = os.path.join(outDir, "Measures_mesh_metrics.pdf")
+        pdfPath = os.path.join(outDir, "MAR_ForaLABS.pdf")
         self._save_html_to_pdf(html, pdfPath)
         logging.info(f"Exported: {pdfPath}")
         return pdfPath
