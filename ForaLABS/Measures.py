@@ -548,7 +548,11 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
     def _prepare_polydata(self, poly):
         tf = vtk.vtkTriangleFilter(); tf.SetInputData(poly); tf.Update()
         clean = vtk.vtkCleanPolyData(); clean.SetInputData(tf.GetOutput()); clean.Update()
-        return clean.GetOutput()
+        
+        # Remove any degenerate lines/vertices created by cleaning
+        tf2 = vtk.vtkTriangleFilter(); tf2.SetInputData(clean.GetOutput())
+        tf2.PassLinesOff(); tf2.PassVertsOff(); tf2.Update()
+        return tf2.GetOutput()
 
     def _surface_area_and_volume(self, poly):
         mp = vtk.vtkMassProperties(); mp.SetInputData(poly); mp.Update()
