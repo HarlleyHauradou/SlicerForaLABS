@@ -45,18 +45,28 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         try:
             uiWidget = slicer.util.loadUI(self.resourcePath('UI/Measures.ui'))
         except Exception:
-            import os
             ui_path = os.path.join(os.path.dirname(__file__), 'Resources', 'UI', 'Measures.ui')
             uiWidget = slicer.util.loadUI(ui_path)
         self.layout.addWidget(uiWidget)
+        uiWidget.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
+
+        # Load ForaLABS lockup
+        try:
+            lockup_path = os.path.join(os.path.dirname(__file__), 'Resources', 'Icons', 'ForaLABS_lockup.png')
+            if os.path.exists(lockup_path):
+                pixmap = qt.QPixmap(lockup_path)
+                scaled_pixmap = pixmap.scaledToHeight(90, qt.Qt.SmoothTransformation) 
+                self.ui.lockupLabel.setPixmap(scaled_pixmap)
+                self.ui.lockupLabel.setAlignment(qt.Qt.AlignCenter)
+            else:
+                logging.error(f"Lockup image not found at: {lockup_path}")
+        except Exception as e:
+            logging.error(f"Failed to load lockup image: {e}")
 
         # Optional aliases (keep old attribute names)
         self.segSelector           = self.ui.segSelector
         self.wallSegmentCombo      = self.ui.wallSegmentCombo
-        self.refreshSegsBtn        = self.ui.refreshSegsButton
-        self.minDiamPctSpin        = self.ui.minDiamPctSpin
-        self.removeUnrefCheck      = self.ui.removeUnrefCheck
         self.computeBtn            = self.ui.computeButton
         self.exportBtn             = self.ui.exportButton
         self.saveMeshBtn           = self.ui.saveMeshButton
@@ -65,7 +75,18 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.genThickBtn           = self.ui.genThickButton
         self.expThickBtn           = self.ui.expThickButton
         self.showThickBtn          = self.ui.showThickButton
+        self.refreshSegsBtn        = self.ui.refreshSegsButton
         self.statusLabel           = getattr(self.ui, 'statusLabel', qt.QLabel())
+        self.progressBar           = getattr(self.ui, 'progressBar', qt.QProgressBar())
+
+        # Measure-selection checkboxes
+        self.chkPores        = self.ui.chkPores
+        self.chkPorosity     = self.ui.chkPorosity
+        self.chkArea         = self.ui.chkArea
+        self.chkVolume       = self.ui.chkVolume
+        self.chkSV           = self.ui.chkSV
+        self.chkPoreDensity  = self.ui.chkPoreDensity
+        self.chkThickness    = self.ui.chkThickness
 
         # MRML hookup required for qMRMLNodeComboBox in .ui
         self.segSelector.setMRMLScene(slicer.mrmlScene)
@@ -79,8 +100,52 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.expThickBtn.clicked.connect(self.onExportThicknessMap)
         self.showThickBtn.clicked.connect(self.onShowThicknessMapSlices)
 
-        self.layout.addStretch(1)
+        # --- Settings section (stuck to bottom like Data Probe) ---
+        settingsButton = ctk.ctkCollapsibleButton()
+        settingsButton.text = "Settings"
+        settingsButton.collapsed = True
+        self.layout.addWidget(settingsButton)
+        settingsLayout = qt.QFormLayout(settingsButton)
 
+        self.minDiamPctSpin = ctk.ctkDoubleSpinBox()
+        self.minDiamPctSpin.decimals = 1
+        self.minDiamPctSpin.minimum = 0.0
+        self.minDiamPctSpin.maximum = 100.0
+        self.minDiamPctSpin.value = 10.0
+        settingsLayout.addRow("Remove islands: % of BBox diagonal (0=off)", self.minDiamPctSpin)
+
+        self.removeUnrefCheck = qt.QCheckBox("Remove unreferenced vertices")
+        self.removeUnrefCheck.checked = True
+        settingsLayout.addRow(self.removeUnrefCheck)
+
+        # uiWidget expands to fill all available space (report area grows);
+        # Settings stays compact at the bottom.
+        self.layout.setStretchFactor(uiWidget, 1)
+        self.layout.setStretchFactor(settingsButton, 0)
+
+
+    # ---- Progress helpers ----
+    def _showProgress(self, msg, value=0):
+        """Show status text with a determinate progress bar."""
+        self.statusLabel.text = msg
+        self.progressBar.setValue(value)
+        self.progressBar.setVisible(True)
+        slicer.app.processEvents()
+
+    def _updateProgress(self, value, msg=None):
+        """Update progress bar value (0-100) and optionally the status text."""
+        self.progressBar.setValue(value)
+        if msg:
+            self.statusLabel.text = msg
+        slicer.app.processEvents()
+
+    def _hideProgress(self, msg):
+        """Hide progress bar and show final status text."""
+        self.progressBar.setValue(100)
+        slicer.app.processEvents()
+        self.progressBar.setVisible(False)
+        self.statusLabel.text = msg
+        slicer.app.processEvents()
 
     # ---- UI helpers ----
     def onRefreshSegments(self):
@@ -101,6 +166,19 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return sid
 
     # ---- Actions ----
+    def _read_include_flags(self):
+        """Read the measure-selection checkboxes and return a dict."""
+        return {
+            "pores": self.chkPores.isChecked(),
+            # TODO: Porosity is not working. Do not read it.
+            # "porosity": self.chkPorosity.isChecked(),
+            "area": self.chkArea.isChecked(),
+            "volume": self.chkVolume.isChecked(),
+            "sv": self.chkSV.isChecked(),
+            "pore_density": self.chkPoreDensity.isChecked(),
+            "thickness": self.chkThickness.isChecked(),
+        }
+
     def onCompute(self):
         segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
         wallSid = self._currentSegmentId(); assert wallSid, "Select the WALL segment."
@@ -117,23 +195,35 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         except TypeError: 
             thickVoxel = float(self.thickVoxelSpin.value)
 
-        self.statusLabel.text = "Computing…"; slicer.app.processEvents()
+        include = self._read_include_flags()
+
+        self._showProgress("Computing…", 0)
         t0 = time.perf_counter()
         metrics = self.logic.compute_metrics(
             segNode, wallSid,
-            minDiamPct=minPct, removeUnref=rmUnref, thickness_voxel_mm=thickVoxel
+            minDiamPct=minPct, removeUnref=rmUnref, thickness_voxel_mm=thickVoxel,
+            progressCallback=lambda v, m=None: self._updateProgress(v, m),
+            include=include
         )
         dt = time.perf_counter() - t0
 
-        html = self.logic.render_metrics_html(metrics, elapsed=dt)
+        html = self.logic.render_metrics_html(metrics, elapsed=dt, include=include)
         self.outputBrowser.setHtml(html)
-        self.statusLabel.text = f"Time (≈ {dt:.2f} s)."
+        self._hideProgress(f"Time (≈ {dt:.2f} s).")
+
+        # Enable buttons that depend on computed results
+        self.exportBtn.setEnabled(True)
+        self.saveMeshBtn.setEnabled(True)
+        self.genThickBtn.setEnabled(True)
+        self.expThickBtn.setEnabled(True)
+        self.showThickBtn.setEnabled(True)
 
     def onExport(self):
         metrics = self.logic.last_metrics; assert metrics, "Compute metrics first."
         outDir = qt.QFileDialog.getExistingDirectory(None, "Choose output folder")
         if not outDir: return
-        pdfPath = self.logic.export_results(outDir)
+        include = self._read_include_flags()
+        pdfPath = self.logic.export_results(outDir, include=include)
         qt.QMessageBox.information(slicer.util.mainWindow(), "Measures", f"Exported: - {pdfPath}")
 
     def onSaveCleanMesh(self):
@@ -168,12 +258,12 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError:
             rmUnref = bool(self.removeUnrefCheck.checked)
-        self.statusLabel.text = "Generating thickness map…"; slicer.app.processEvents()
+        self._showProgress("Generating thickness map…")
         ok, modelNode = self.logic.generate_thickness_map_on_mesh(segNode, wallSid, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref)
         if ok:
-            self.statusLabel.text = "Map applied to mesh (see colored model in the scene)."
+            self._hideProgress("Map applied to mesh (see colored model in the scene).")
         else:
-            self.statusLabel.text = "Failed to generate thickness map. Check the log."
+            self._hideProgress("Failed to generate thickness map. Check the log.")
 
     def onExportThicknessMap(self):
         segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
@@ -196,14 +286,14 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError:
             rmUnref = bool(self.removeUnrefCheck.checked)
-        self.statusLabel.text = "Computing & exporting map (NRRD)…"; slicer.app.processEvents()
+        self._showProgress("Computing & exporting map (NRRD)…")
         ok, finalPath = self.logic.export_thickness_nrrd(segNode, wallSid, outPath, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref)
         if ok:
             qt.QMessageBox.information(slicer.util.mainWindow(), "Measures", f"Map saved to: {finalPath}")
-            self.statusLabel.text = "NRRD map exported."
+            self._hideProgress("NRRD map exported.")
         else:
             qt.QMessageBox.critical(slicer.util.mainWindow(), "Measures", "Failed to export map.")
-            self.statusLabel.text = "Failed to export map."
+            self._hideProgress("Failed to export map.")
 
     def onShowThicknessMapSlices(self):
         segNode = self.segSelector.currentNode(); assert segNode, "Select a SegmentationNode."
@@ -221,12 +311,12 @@ class MeasuresWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rmUnref = bool(self.removeUnrefCheck.isChecked())
         except TypeError:
             rmUnref = bool(self.removeUnrefCheck.checked)
-        self.statusLabel.text = "Preparing thickness volume…"; slicer.app.processEvents()
+        self._showProgress("Preparing thickness volume…")
         ok, volNode = self.logic.show_thickness_in_slices(segNode, wallSid, voxel_mm=voxel, minDiamPct=mdp, removeUnref=rmUnref)
         if ok:
-            self.statusLabel.text = "Map displayed in slice views (Red/Yellow/Green)."
+            self._hideProgress("Map displayed in slice views (Red/Yellow/Green).")
         else:
-            self.statusLabel.text = "Failed to show in slices. Check the log."
+            self._hideProgress("Failed to show in slices. Check the log.")
 
 
 
@@ -243,7 +333,21 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         self.last_thick_model = None # vtkMRMLModelNode
 
     def compute_metrics(self, segNode, wallSegmentId, minDiamPct=10.0, removeUnref=True,
-                       thickness_enabled=True, thickness_voxel_mm=0.003):
+                       thickness_enabled=True, thickness_voxel_mm=0.003,
+                       progressCallback=None, include=None):
+        if include is None:
+            include = {k: True for k in ('pores', 'area', 'volume', 'sv', 'pore_density', 'thickness')}
+
+        need_pores = include.get('pores', True) or include.get('pore_density', True)
+        need_area = include.get('area', True) or include.get('sv', True) or include.get('pore_density', True)
+        need_volume = include.get('volume', True) or include.get('sv', True)
+        need_thickness = include.get('thickness', True) and thickness_enabled
+
+        def _progress(val, msg=None):
+            if progressCallback:
+                progressCallback(val, msg)
+
+        _progress(5, "Preparing mesh…")
         poly = self._segment_to_polydata(segNode, wallSegmentId)
         poly = self._prepare_polydata(poly)
 
@@ -251,24 +355,38 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         bounds = poly.GetBounds(); dx=bounds[1]-bounds[0]; dy=bounds[3]-bounds[2]; dz=bounds[5]-bounds[4]
         bbox_diag = (dx*dx + dy*dy + dz*dz)**0.5 if poly.GetNumberOfPoints()>0 else 0.0
         minDiamMM = (bbox_diag * (float(minDiamPct)/100.0)) if minDiamPct and bbox_diag>0 else 0.0
+        _progress(15, "Cleaning mesh…")
         poly, clean_info = self._remove_isolated_pieces_by_diameter(poly, minDiamMM, removeUnref=removeUnref)
         clean_info.update({"min_diam_pct": float(minDiamPct), "bbox_diag": float(bbox_diag)})
         self.last_clean_poly = poly
 
         # Area and volume
-        A_mesh, V_mesh = self._surface_area_and_volume(poly)
+        A_mesh, V_mesh = None, None
+        if need_area or need_volume:
+            _progress(30, "Computing area & volume…")
+            A_mesh, V_mesh = self._surface_area_and_volume(poly)
+            if not need_area: A_mesh = None
+            if not need_volume: V_mesh = None
        
         # Pore count via genus
-        pore_count = self._genus_based_pore_count(poly)
+        pore_count = None
+        if need_pores:
+            _progress(45, "Counting pores…")
+            pore_count = self._genus_based_pore_count(poly)
 
         # Derived
-        S_over_V = (A_mesh / V_mesh) if V_mesh > 0 else float('nan')
-        pore_density = (pore_count / A_mesh) if A_mesh > 0 else float('nan')  # #/mm²
-        
+        S_over_V = float('nan')
+        if include.get('sv', True) and A_mesh is not None and V_mesh and V_mesh > 0:
+            S_over_V = A_mesh / V_mesh
+            
+        pore_density = float('nan')
+        if include.get('pore_density', True) and pore_count is not None and A_mesh and A_mesh > 0:
+            pore_density = pore_count / A_mesh  # #/mm²
 
         # Thickness (medial)
         thick = None
-        if thickness_enabled:
+        if need_thickness:
+            _progress(60, "Computing thickness…")
             try:
                 # generate map and get stats
                 sitk_img, info = self._thickness_map_medial_from_poly(poly, voxel_mm=float(thickness_voxel_mm))
@@ -294,24 +412,56 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 traceback.print_exc()
                 thick = None
 
-        # Porosity (%)
-        if pore_count and pore_count > 0:
-            porosity_pct = (pore_density / float(pore_count)) * 100.0
-        else:
-            porosity_pct = float('nan')
+        # Porosity (%) - TODO: Fix porosity calculation
+        # porosity_pct = float('nan')
+        # if include.get('porosity', True) and pore_count and pore_count > 0 and pore_density is not None:
+        #     porosity_pct = (pore_density / float(pore_count)) * 100.0
 
+        _progress(90, "Finalizing…")
+        
+        # Identification Info
+        try:
+            volNode = segNode.GetNodeReference("referenceImageGeometryRef")
+            volName = volNode.GetName() if volNode else "—"
+        except Exception:
+            volName = "—"
+            
+        try:
+            segName = segNode.GetName() if segNode else "—"
+        except Exception:
+            segName = "—"
+            
+        try:
+            segmentation = segNode.GetSegmentation()
+            segment = segmentation.GetSegment(wallSegmentId) if segmentation else None
+            segmentName = segment.GetName() if segment else "—"
+        except Exception:
+            segmentName = "—"
+            
+        import datetime
+        generation_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        id_info = {
+            "volume_name": volName,
+            "segmentation_name": segName,
+            "segment_name": segmentName,
+            "time": generation_time
+        }
+        
         metrics = {
-            "count_pores": int(pore_count),
-            "surface_area_mm2": float(A_mesh),
-            "volume_mm3": float(V_mesh),
+            "count_pores": pore_count,
+            "surface_area_mm2": A_mesh if A_mesh is not None else float('nan'),
+            "volume_mm3": V_mesh if V_mesh is not None else float('nan'),
             "S_over_V": float(S_over_V),
             "pore_density_per_mm2": float(pore_density),
-            "porosity_pct": float(porosity_pct), 
+            # "porosity_pct": float(porosity_pct), 
             "cleaning": clean_info,
-            "thickness_mm": thick
+            "thickness_mm": thick,
+            "id_info": id_info
         }
 
         self.last_metrics = metrics
+        _progress(100, "Done.")
         return metrics
 
     # ---------- Render (HTML) ----------
@@ -327,24 +477,13 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             return "—"
         return f"{float(x):.{p}f}"
 
-    def render_metrics_html(self, m: dict, elapsed: float = None) -> str:
-        # ---- nota de limpeza (igual ao seu código) ----
+    def render_metrics_html(self, m: dict, elapsed: float = None, include: dict = None, is_export: bool = False) -> str:
+        # Default: include everything except broken porosity
+        if include is None:
+            include = {k: True for k in ('pores','area','volume','sv','pore_density','thickness','cleaning_note')}
+
+        # ---- nota de limpeza ----
         note = ""
-        clean = m.get('cleaning') or {}
-        try:
-            md = float(clean.get('min_diam_mm', 0.0))
-            mp = float(clean.get('min_diam_pct', 0.0))
-            bb = float(clean.get('bbox_diag', 0.0))
-            if mp > 0.0:
-                kept = int(clean.get('regions_kept', 0))
-                total = int(clean.get('regions_total', 0))
-                overflow = bool(clean.get('overflow_largest_only', False))
-                extra = " (fallback: largest component only)" if overflow else ""
-                # note = (f"<div class='sub' style='margin-top:6px;'>"
-                #         f"Cleaning: removed {max(0,total-kept)} islands &lt; {mp:.1f}% of diag. "
-                #         f"(≈ {md:.3f} mm of {bb:.6f} mm); kept: {kept}/{total}{extra}.</div>")
-        except Exception:
-            pass
 
         # ---- thickness ----
         thick = m.get('thickness_mm') or {}
@@ -352,39 +491,62 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         thick_sd_um    = self._fmt((thick.get('std_mm')   * 1000.0) if thick else None, p=3)
         thick_voxel_um = self._fmt((thick.get('voxel_mm') * 1000.0) if thick else None, p=3)
 
-        # ---- contexto para o template ----
+        # ---- build conditional rows ----
+        def _row(key, label, value):
+            return f"<tr><td class='key'>{label}</td><td class='val'>{value}</td></tr>" if include.get(key, True) else ""
+
+        rows = ""
+        rows += _row('pores',        'Pores',                m.get('count_pores') if m.get('count_pores') is not None else "—")
+        # TODO: Fix porosity calc
+        # rows += _row('porosity',     'Porosity (%)',         self._fmt(m.get('porosity_pct'), p=2))
+        rows += _row('area',         'Surface area (mm²)',   self._fmt(m.get('surface_area_mm2'), p=6))
+        rows += _row('volume',       'Volume (mm³)',         self._fmt(m.get('volume_mm3'), p=6))
+        rows += _row('sv',           'S/V (mm⁻¹)',           self._fmt(m.get('S_over_V'), p=6))
+        rows += _row('pore_density', 'Pore density (mm⁻²)',  self._fmt(m.get('pore_density_per_mm2'), p=6))
+        if include.get('thickness', True):
+            rows += f"<tr><td class='key'>Thickness mean (µm)</td><td class='val'>{thick_mean_um}</td></tr>"
+            rows += f"<tr><td class='key'>Thickness SD (µm)</td><td class='val'>{thick_sd_um}</td></tr>"
+            rows += f"<tr><td class='key'>Thickness voxel (µm)</td><td class='val'>{thick_voxel_um}</td></tr>"
+
+        import base64
+        lockup_b64 = ""
+        try:
+            lockup_path = os.path.join(os.path.dirname(__file__), 'Resources', 'Icons', 'ForaLABS_lockup.png')
+            if os.path.exists(lockup_path):
+                with open(lockup_path, "rb") as image_file:
+                    lockup_b64 = base64.b64encode(image_file.read()).decode('utf-8')
+        except Exception as e:
+            logging.error(f"Failed to load lockup image for export: {e}")
+
+        # ---- identification rows ----
+        id_info = m.get('id_info', {})
+        id_rows = ""
+        id_rows += _row('id_vol', 'Volume', id_info.get('volume_name', '—'))
+        id_rows += _row('id_seg', 'Segmentation', id_info.get('segmentation_name', '—'))
+        id_rows += _row('id_segment', 'Segment', id_info.get('segment_name', '—'))
+        id_rows += _row('id_time', 'Date / Time', id_info.get('time', '—'))
+
         ctx = {
-            "pore_count":            int(m.get('count_pores') or 0),
-            "surface_area_mm2":      self._fmt(m.get('surface_area_mm2'), p=6),
-            "volume_mm3":            self._fmt(m.get('volume_mm3'), p=6),
-            "s_over_v":              self._fmt(m.get('S_over_V'), p=6),
-            "pore_density_per_mm2":  self._fmt(m.get('pore_density_per_mm2'), p=6),
-            "porosity_pct": self._fmt(m.get('porosity_pct'), p=2),
-            "thick_mean_um":         thick_mean_um,
-            "thick_sd_um":           thick_sd_um,
-            "thick_voxel_um":        thick_voxel_um,
-            "foot_left":             ("Morphometric measurements using ForaLABS"),
-            "note":                  note,
+            "rows":       rows,
+            "id_rows":    id_rows,
+            "foot_left":  "Morphometric measurements using ForaLABS",
+            "note":       note,
+            "lockup_b64": lockup_b64
         }
 
         # ---- carrega template e substitui ----
-        tpl_path = self._resource_path('HTML/MeasuresReport.html')
+        tpl_name = 'HTML/MeasuresReportExport.html' if is_export else 'HTML/MeasuresReport.html'
+        tpl_path = self._resource_path(tpl_name)
         try:
             with open(tpl_path, 'r', encoding='utf-8') as f:
                 tpl = Template(f.read())
             return tpl.safe_substitute(ctx)
         except Exception as e:
-            # Fallback: algo mínimo se o template não estiver disponível
+            # Fallback mínimo
             return (f"<html><body><h3>Measures</h3>"
-                    f"<p>Pores: {ctx['pore_count']}</p>"
-                    f"<p>Area: {ctx['surface_area_mm2']} mm²</p>"
-                    f"<p>Volume: {ctx['volume_mm3']} mm³</p>"
-                    f"<p>S/V: {ctx['s_over_v']} mm⁻¹</p>"
-                    f"<p>Pore density: {ctx['pore_density_per_mm2']} mm⁻²</p>"
-                    f"<p>Thickness mean: {ctx['thick_mean_um']} µm</p>"
-                    f"<p>Thickness voxel: {ctx['thick_voxel_um']} µm</p>"
+                    f"<table class='kv'>{rows}</table>"
                     f"<div class='sub'>{ctx['foot_left']}</div>"
-                    f"{ctx['note']}</body></html>")
+                    f"{note}</body></html>")
 
 
      # ---------- EXPORT Helper ----------
@@ -413,12 +575,12 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             doc.print(printer)
 
     # ---------- Export ----------
-    def export_results(self, outDir):
+    def export_results(self, outDir, include=None):
         import os, logging
-        html = self.render_metrics_html(self.last_metrics or {}, elapsed=None)
+        html = self.render_metrics_html(self.last_metrics or {}, elapsed=None, include=include, is_export=True)
         if not os.path.isdir(outDir):
             os.makedirs(outDir, exist_ok=True)
-        pdfPath = os.path.join(outDir, "Measures_mesh_metrics.pdf")
+        pdfPath = os.path.join(outDir, "MAR_ForaLABS.pdf")
         self._save_html_to_pdf(html, pdfPath)
         logging.info(f"Exported: {pdfPath}")
         return pdfPath
@@ -458,7 +620,11 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
     def _prepare_polydata(self, poly):
         tf = vtk.vtkTriangleFilter(); tf.SetInputData(poly); tf.Update()
         clean = vtk.vtkCleanPolyData(); clean.SetInputData(tf.GetOutput()); clean.Update()
-        return clean.GetOutput()
+        
+        # Remove any degenerate lines/vertices created by cleaning
+        tf2 = vtk.vtkTriangleFilter(); tf2.SetInputData(clean.GetOutput())
+        tf2.PassLinesOff(); tf2.PassVertsOff(); tf2.Update()
+        return tf2.GetOutput()
 
     def _surface_area_and_volume(self, poly):
         mp = vtk.vtkMassProperties(); mp.SetInputData(poly); mp.Update()

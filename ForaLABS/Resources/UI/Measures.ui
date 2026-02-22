@@ -12,9 +12,34 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <widget class="ctkCollapsibleButton" name="inputsCollapsibleButton">
-     <property name="text">
-      <string>Inputs</string>
+    <widget class="QLabel" name="lockupLabel">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>60</height>
+      </size>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>16777215</width>
+       <height>100</height>
+      </size>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="inputGroupBox">
+     <property name="title">
+      <string>Input</string>
      </property>
      <layout class="QFormLayout" name="formLayout_inputs">
       <item row="0" column="0">
@@ -48,6 +73,27 @@
         </property>
        </widget>
       </item>
+      <item row="1" column="0" colspan="2">
+       <layout class="QHBoxLayout" name="hLayoutSegment">
+        <item>
+         <widget class="QLabel" name="labelWall">
+          <property name="text">
+           <string>Segment</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="wallSegmentCombo"/>
+        </item>
+        <item>
+         <widget class="QPushButton" name="refreshSegsButton">
+          <property name="text">
+           <string>Refresh segments</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
       <item row="2" column="0">
        <widget class="QLabel" name="labelVoxel">
         <property name="text">
@@ -71,173 +117,228 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="0" colspan="2">
-       <layout class="QHBoxLayout" name="hLayoutSegment">
-        <item>
-         <widget class="QLabel" name="labelWall">
-          <property name="text">
-           <string>Segment</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QComboBox" name="wallSegmentCombo"/>
-        </item>
-        <item>
-         <widget class="QPushButton" name="refreshSegsButton">
-          <property name="text">
-           <string>Refresh segments</string>
-          </property>
-         </widget>
-        </item>
-       </layout>
-      </item>
      </layout>
     </widget>
    </item>
    <item>
-    <widget class="QPushButton" name="computeButton">
-     <property name="text">
-      <string>Compute</string>
+    <widget class="QGroupBox" name="measuresGroupBox">
+     <property name="title">
+      <string>Measures to include (report)</string>
      </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QTextBrowser" name="outputBrowser"/>
-   </item>
-   <item>
-    <widget class="QLabel" name="statusLabel">
-     <property name="text">
-      <string/>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <widget class="ctkCollapsibleButton" name="thicknessCollapsibleButton">
-     <property name="text">
-      <string>Thickness map</string>
-     </property>
-     <property name="collapsed">
-      <bool>true</bool>
-     </property>
-     <layout class="QHBoxLayout" name="horizontalLayout_2">
-      <item>
-       <widget class="QPushButton" name="showThickButton">
+     <layout class="QGridLayout" name="gridLayout_measures">
+      <item row="0" column="0">
+       <widget class="QCheckBox" name="chkPores">
         <property name="text">
-         <string>Show map thickness in slices</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="genThickButton">
-        <property name="text">
-         <string>Generate thickness map model 3D</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="ctkCollapsibleButton" name="computeCollapsibleButton">
-     <property name="text">
-      <string>Export</string>
-     </property>
-     <property name="collapsed">
-      <bool>true</bool>
-     </property>
-     <layout class="QHBoxLayout" name="horizontalLayout">
-      <item>
-       <widget class="QPushButton" name="exportButton">
-        <property name="text">
-         <string>Export measures</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="expThickButton">
-        <property name="text">
-         <string>Export thickness map in NRRD</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="saveMeshButton">
-        <property name="text">
-         <string>Export cleaned mesh (.stl/.ply)</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <spacer name="verticalSpacer_2">
-     <property name="orientation">
-      <enum>Qt::Vertical</enum>
-     </property>
-     <property name="sizeHint" stdset="0">
-      <size>
-       <width>20</width>
-       <height>40</height>
-      </size>
-     </property>
-    </spacer>
-   </item>
-   <item>
-    <widget class="ctkCollapsibleButton" name="settingsCollapsibleButton">
-     <property name="text">
-      <string>Settings</string>
-     </property>
-     <property name="collapsed">
-      <bool>true</bool>
-     </property>
-     <layout class="QFormLayout" name="formLayout">
-      <item row="1" column="0">
-       <widget class="QLabel" name="labelMinDiam">
-        <property name="text">
-         <string>Remove islands: % of BBox diagonal (0=off)</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="ctkDoubleSpinBox" name="minDiamPctSpin">
-        <property name="decimals">
-         <number>1</number>
-        </property>
-        <property name="minimum">
-         <double>0.000000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>100.000000000000000</double>
-        </property>
-        <property name="value">
-         <double>10.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="0">
-       <widget class="QCheckBox" name="removeUnrefCheck">
-        <property name="text">
-         <string>Remove unreferenced vertices</string>
+         <string>Pores</string>
         </property>
         <property name="checked">
          <bool>true</bool>
         </property>
        </widget>
       </item>
+      <item row="0" column="2">
+       <widget class="QCheckBox" name="chkArea">
+        <property name="text">
+         <string>Area</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QCheckBox" name="chkVolume">
+        <property name="text">
+         <string>Volume</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QCheckBox" name="chkSV">
+        <property name="text">
+         <string>S/V</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QCheckBox" name="chkPoreDensity">
+        <property name="text">
+         <string>Pore density</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QCheckBox" name="chkThickness">
+        <property name="text">
+         <string>Thickness</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QCheckBox" name="chkPorosity">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Porosity (%) (available soon)</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="hLayoutActions">
+     <item>
+      <widget class="QPushButton" name="computeButton">
+       <property name="text">
+        <string>Compute</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="exportButton">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>Export PDF</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="saveMeshButton">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>Save Clean Mesh</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="thicknessGroupBox">
+     <property name="title">
+      <string>Thickness map</string>
+     </property>
+     <layout class="QHBoxLayout" name="hLayoutThickness">
+      <item>
+       <widget class="QPushButton" name="genThickButton">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Generate on Mesh</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="expThickButton">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Export NRRD</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="showThickButton">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="text">
+         <string>Show in Slices</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTextBrowser" name="outputBrowser">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+       <horstretch>0</horstretch>
+       <verstretch>1</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>200</height>
+      </size>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="hLayoutStatus">
+     <item>
+      <widget class="QLabel" name="statusLabel">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Fixed" vsizetype="Preferred">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="text">
+        <string/>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QProgressBar" name="progressBar">
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>1</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+       <property name="maximumSize">
+        <size>
+         <width>16777215</width>
+         <height>16</height>
+        </size>
+       </property>
+       <property name="visible">
+        <bool>false</bool>
+       </property>
+       <property name="minimum">
+        <number>0</number>
+       </property>
+       <property name="maximum">
+        <number>100</number>
+       </property>
+       <property name="value">
+        <number>0</number>
+       </property>
+       <property name="textVisible">
+        <bool>false</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
   </layout>
  </widget>
  <customwidgets>
-  <customwidget>
-   <class>ctkCollapsibleButton</class>
-   <extends>QWidget</extends>
-   <header>ctkCollapsibleButton.h</header>
-   <container>1</container>
-  </customwidget>
   <customwidget>
    <class>ctkDoubleSpinBox</class>
    <extends>QWidget</extends>
