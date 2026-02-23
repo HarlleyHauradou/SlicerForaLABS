@@ -7,8 +7,14 @@ set(MODULE_PYTHON_SCRIPTS
   )
 
 set(MODULE_PYTHON_RESOURCES
-  Resources/Icons/${MODULE_NAME}.png
-  Resources/UI/${MODULE_NAME}.ui
+  Resources/HTML/MeasuresReport.html
+  Resources/HTML/MeasuresReportExport.html
+  Resources/Icons/ForaLABS_icon.png
+  Resources/Icons/ForaLABS_lockup.png
+  Resources/Icons/ImportTXM.png
+  Resources/Icons/Measures.png
+  Resources/UI/Measures.ui
+  Resources/UI/ImportTXM.ui
   )
 
 #-----------------------------------------------------------------------------
