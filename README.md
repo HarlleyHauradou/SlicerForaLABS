@@ -14,10 +14,14 @@ The ForaLABS is a set of 3D Slicer modules customized for the micro-CT analysis 
 
 ForaLABS acts as a dedicated pipeline within 3D Slicer for scientists and researchers working with micro-CT (computed tomography) scans of foraminifera. Its primary goal is to automate the extraction of morphometric features.
 
+![Screenshot of ForaLABS](ForaLABS/Resources/Icons/screenshot.png)
+
 It currently consists of two main modules:
 
 ### 1. Measures
+
 The flagship module that performs analysis on segmented 3D geometries (surface meshes) directly extracted from the 3D volumes.
+
 - **Morphometric measurements**: Computes Total Surface Area (mm²), Volume (mm³), and the Surface-Volume ratio (S/V).
 - **Pore Statistics**: It counts the number of pores using a topological proxy, counts the number of Euler characteristic and genus, and determines the overall pore density (counts/mm²).
 - **Thickness Mapping**: Calculates the thickness of the tests over the structure using Maurer signed distance. Generates a color map of the thickness in the 3D mesh and exports a NRRD volumetric file.
@@ -25,7 +29,9 @@ The flagship module that performs analysis on segmented 3D geometries (surface m
 - **Reporting**: Generates a one-click automated HTML report inside the application with all computed metrics (Pores count, Porosity, Area, Volume, etc.), which can be instantly exported to PDF.
 
 ### 2. ImportTXM
+
 A specialized image importing module.
+
 - **Zeiss TXM Support**: Directly imports reconstructed images coming from Zeiss X-Ray microscopy systems without the need for intermediate 3rd-party image conversion scripts.
 - **Metadata Management**: It records the following metadata that can be viewed.
   - Pixel size
@@ -40,7 +46,7 @@ A specialized image importing module.
   - Exposure Time (s)
   - Source to RA Distance (cm)
   - Detector to RA Distance (cm)
-  - Source filter 
+  - Source filter
 
 ---
 
@@ -79,16 +85,16 @@ A specialized image importing module.
 ## Methodological Summary
 
 - **Island Removal / Mesh Cleaning**: Performs an automatic connected component split. It evaluates the bounding box diagonal per component and retains only those exceeding the specified threshold (defined as a percentage of the total mesh dimension).
-- **Pore Count Formulation**: Evaluates pore count using a topological proxy that utilizes the Euler feature. 
-$$
-\chi = V - E + F
-$$
-where V is the number of vertices, E is the number of edges, and F is the number of faces.
-The structural genus is calculated for each connected geometric region.
-$$
-g = \frac{2 - \chi}{2}
-$$
-The global summation yields the absolute pore count.
+- **Pore Count Formulation**: Evaluates pore count using a topological proxy that utilizes the Euler feature.
+  $$
+  \chi = V - E + F
+  $$
+  where V is the number of vertices, E is the number of edges, and F is the number of faces.
+  The structural genus is calculated for each connected geometric region.
+  $$
+  g = \frac{2 - \chi}{2}
+  $$
+  The global summation yields the absolute pore count.
 - **Thickness Logic**: Employs spatial voxelization (defined by user resolution) and evaluates the Maurer signed distance mapped relative to the generated internal medial surface. Results are exported natively in NRRD format and mapped symmetrically to all mesh surface geometries via interpolation.
 
 ---
@@ -119,6 +125,7 @@ Collaborations across academia and industry are strongly encouraged. Feel free t
 ## Cite
 
 If you incorporate ForaLABS directly in academic work, please refer to this toolchain (and subsequent publications). Example:
+
 ```text
 Hauradou H., Hauradou T. (2025). ForaLABS – microCT tools for foraminifera (3D Slicer modules).
 GitHub repository: https://github.com/HarlleyHauradou/SlicerForaLABS
