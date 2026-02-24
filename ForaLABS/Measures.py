@@ -742,6 +742,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
             indices = np.arange(npts)
         
         thickness_values = []
+        valid_pts = vtk.vtkPoints() # Para kdtree
+        valid_vals = vtk.vtkFloatArray()
         
         for idx in indices:
             pt = pts.GetPoint(idx)
@@ -766,6 +768,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                 dist = ((intersection[0]-pt[0])**2 + (intersection[1]-pt[1])**2 + (intersection[2]-pt[2])**2)**0.5
                 if dist > voxel_mm * 0.5 and dist < max_ray_length:  # Filtra ruído
                     thickness_values.append(dist)
+                    valid_pts.InsertNextPoint(pt)
+                    valid_vals.InsertNextValue(dist)
         
         thickness_arr = np.array(thickness_values)
         
@@ -790,6 +794,8 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
                     dist = ((intersection[0]-pt[0])**2 + (intersection[1]-pt[1])**2 + (intersection[2]-pt[2])**2)**0.5
                     if dist > voxel_mm * 0.5 and dist < max_ray_length:
                         thickness_values.append(dist)
+                        valid_pts.InsertNextPoint(pt)
+                        valid_vals.InsertNextValue(dist)
             
             thickness_arr = np.array(thickness_values)
         
@@ -809,10 +815,26 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         iqr = q3 - q1
         lower_bound = q1 - 1.5 * iqr
         upper_bound = q3 + 1.5 * iqr
-        filtered = thickness_arr[(thickness_arr >= max(lower_bound, voxel_mm)) & (thickness_arr <= upper_bound)]
         
+        # Não filtra removendo do array de pontos para não dessincronizar, 
+        # mas podemos truncar ou ignorar os pontos fora do limite no KDTree.
+        # Para simplificar a matemática de bounds, vamos apenas truncar (clip) os valores localmente
+        # para que o gradiente não seja destruído por 1 pico bizarro:
+        
+        clip_min = max(lower_bound, voxel_mm)
+        clip_max = upper_bound
+        
+        filtered = thickness_arr[(thickness_arr >= clip_min) & (thickness_arr <= clip_max)]
         if filtered.size < 10:
             filtered = thickness_arr  # Usa todos se filtro removeu demais
+            clip_min = np.min(thickness_arr)
+            clip_max = np.max(thickness_arr)
+            
+        # Aplica o clip nos escalares que irão para a interpolação 3D
+        for i in range(valid_vals.GetNumberOfTuples()):
+            v = valid_vals.GetValue(i)
+            if v < clip_min: valid_vals.SetValue(i, clip_min)
+            elif v > clip_max: valid_vals.SetValue(i, clip_max)
         
         # Estatísticas
         stats = {
@@ -824,12 +846,64 @@ class MeasuresLogic(ScriptedLoadableModuleLogic):
         }
         
         # Cria imagem de espessura para visualização (opcional)
-        # Voxeliza e preenche com valor médio
+        # Voxeliza e preenche interpolando valores reais da malha (Gradient Map)
         try:
             mask, spacing, origin, shape = self._voxelize_poly_solid(poly, voxel_mm=float(voxel_mm))
             mask_arr = sitk.GetArrayFromImage(mask)
             thick_vol = np.zeros_like(mask_arr, dtype=np.float32)
-            thick_vol[mask_arr > 0] = stats["mean_mm"]
+            
+            # --- Início da Interpolação (Gradient Voxel Map) ---
+            
+            # Cria polydata com os pontos calculados validos
+            kd_poly = vtk.vtkPolyData()
+            kd_poly.SetPoints(valid_pts)
+            valid_vals.SetName("thickness")
+            kd_poly.GetPointData().SetScalars(valid_vals)
+            
+            # Cria KD-Tree
+            locator = vtk.vtkPointLocator()
+            locator.SetDataSet(kd_poly)
+            locator.BuildLocator()
+            
+            # Recupera índices 3D dos voxels que caíram dentro da máscara
+            z_idx, y_idx, x_idx = np.where(mask_arr > 0)
+            
+            id_list = vtk.vtkIdList()
+            k_neighbors = 3  # Interpola via 3 vizinhos mais próximos
+            
+            for p in range(len(x_idx)):
+                ix, iy, iz = x_idx[p], y_idx[p], z_idx[p]
+                
+                # Coord do voxel do centro no espaço real
+                vx = origin[0] + ix * spacing[0]
+                vy = origin[1] + iy * spacing[1]
+                vz = origin[2] + iz * spacing[2]
+                
+                locator.FindClosestNPoints(k_neighbors, (vx, vy, vz), id_list)
+                
+                sum_w = 0.0
+                sum_thick = 0.0
+                
+                for k in range(id_list.GetNumberOfIds()):
+                    pt_id = id_list.GetId(k)
+                    px, py, pz = valid_pts.GetPoint(pt_id)
+                    dist = ((vx-px)**2 + (vy-py)**2 + (vz-pz)**2)**0.5
+                    val = valid_vals.GetValue(pt_id)
+                    
+                    if dist < 1e-6:
+                        sum_thick = val
+                        sum_w = 1.0
+                        break
+                    
+                    w = 1.0 / (dist**2)
+                    sum_thick += val * w
+                    sum_w += w
+                    
+                if sum_w > 0:
+                    thick_vol[iz, iy, ix] = sum_thick / sum_w
+                else:
+                    thick_vol[iz, iy, ix] = stats["mean_mm"]
+            
             thick_img = sitk.GetImageFromArray(thick_vol)
             thick_img.SetSpacing(spacing)
             thick_img.SetOrigin(origin)
