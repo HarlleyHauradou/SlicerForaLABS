@@ -24,7 +24,7 @@ The flagship module that performs analysis on segmented 3D geometries (surface m
 
 - **Morphometric measurements**: Computes Total Surface Area (mm²), Volume (mm³), and the Surface-Volume ratio (S/V).
 - **Pore Statistics**: It counts the number of pores using a topological proxy, counts the number of Euler characteristic and genus, and determines the overall pore density (counts/mm²).
-- **Thickness Mapping**: Calculates the thickness of the tests over the structure using Maurer signed distance. Generates a color map of the thickness in the 3D mesh and exports a NRRD volumetric file.
+- **Thickness Mapping**: Calculates the thickness of the tests over the structure using Ray Casting. Generates a color map of the thickness in the 3D mesh and exports a NRRD volumetric file.
 - **Automated Mesh Cleaning**: Operations akin to MeshLab directly within Slicer, allowing isolation of functional geometries and removal of small disconnected fragments (islands) based on adjustable bounding box thresholds.
 - **Reporting**: Generates a one-click automated HTML report inside the application with all computed metrics (Pores count, Porosity, Area, Volume, etc.), which can be instantly exported to PDF.
 
